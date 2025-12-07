@@ -1,16 +1,8 @@
 #!/usr/bin/env python3
-"""
-从包含多个物体分割mask的图片中，提取每个物体的mask并单独保存。
-
-使用方法:
-    python extract_masks.py <input_mask_image> [--output_dir <output_directory>] [--format <png|jpg>] [--background <0>]
-"""
-
 import argparse
 import os
 import sys
 
-# 添加utils目录到路径
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from utils.mask_utils import MaskExtractor

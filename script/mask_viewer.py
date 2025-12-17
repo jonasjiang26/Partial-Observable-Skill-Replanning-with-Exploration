@@ -11,7 +11,7 @@ import open3d as o3d
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), '..'))
 
 from utils.mask_utils import MaskExtractor
-from utils.depth_projection_utils import ThreeDInstance
+from utils.depth_projection_utils import ThreeDInstance, merge_multi_frame_pointclouds
 
 def visualize_3d_pointcloud_matplotlib(points_world: np.ndarray, title: str = "3D Point Cloud"):
     """
@@ -36,10 +36,6 @@ def visualize_3d_pointcloud_matplotlib(points_world: np.ndarray, title: str = "3
     x_range = points_world[:, 0].max() - points_world[:, 0].min()
     y_range = points_world[:, 1].max() - points_world[:, 1].min()
     
-    if z_range < 1e-6:
-        print(f"  警告: Z轴范围非常小 ({z_range:.6f})，点云可能确实是平面的")
-    elif z_range / max(x_range, y_range) < 0.01:
-        print(f"  警告: Z轴变化相对于XY轴很小 ({z_range/max(x_range, y_range):.4f})，可能看起来像平面")
     
     fig = plt.figure(figsize=(20, 12))
     
@@ -197,12 +193,11 @@ def visualize_3d_pointcloud(points_world: np.ndarray, title: str = "3D Point Clo
 def main():
     parser = argparse.ArgumentParser(description='可视化mask和3D点云')
     parser.add_argument('--load_path', type=str, required=True, help='h5文件路径')
-    parser.add_argument('--frame_id', type=int, required=True, help='帧ID')
+    parser.add_argument('--frame_ids', type=int, nargs='+', required=True, help='帧ID列表，例如: --frame_ids 0 1 2')
     parser.add_argument('--object_id', type=int, default=118, help='要可视化的物体ID（默认118）')
     parser.add_argument('--view_type', type=str, default='agentview', 
                        choices=['agentview', 'eye_in_hand'], 
                        help='使用的视图类型（默认agentview）')
-    parser.add_argument('--show_2d_mask', action='store_true', help='是否显示2D mask')
     parser.add_argument('--show_3d', action='store_true', default=True, help='是否显示3D点云（默认True）')
     parser.add_argument('--use_open3d', action='store_true', 
                        help='使用open3d进行交互式3D可视化（需要安装open3d: pip install open3d）')
@@ -211,29 +206,21 @@ def main():
     background_value = [5, 84, 20, 24, 25, 53, 29, 31, 39, 45, 43, 63, 48, 49, 51, 53, 57, 58, 47, 65, 66, 71, 72, 70, 73, 75, 78]
     viewer = MaskExtractor(background_value=background_value)
     load_path = args.load_path
-    viewer.load(load_path, args.frame_id)
-    viewer.extract(binary=True, view_type=args.view_type)
     
-    # 获取2D instance
-    obj_2d = viewer.get_object_by_id(args.object_id)
-    if obj_2d is None:
-        print(f"错误: 未找到object_id为{args.object_id}的物体")
-        print(f"可用的物体ID: {[obj.object_id for obj in viewer.objects]}")
-        return
+    # 收集所有帧的3D实例
+    instances_3d = []
     
-    # 显示2D mask
-    if args.show_2d_mask:
-        mask = obj_2d.binary_mask
-        print(f"Mask形状: {mask.shape}")
-        print(f"Mask非零像素数: {np.sum(mask > 0)}")
-        cv2.imshow('2D Mask', mask)
-        cv2.waitKey(0)
-        cv2.destroyAllWindows()
-    
-    # 创建3D instance并可视化点云
-    if args.show_3d:
-        print(f"\n正在创建3D instance并投影到世界坐标系...")
-        print(f"使用视图类型: {args.view_type}")
+    for frame_id in args.frame_ids:
+        print(f"\n处理帧 {frame_id}...")
+        viewer.load(load_path, frame_id)
+        viewer.extract(binary=True, view_type=args.view_type)
+        
+        # 获取2D instance
+        obj_2d = viewer.get_object_by_id(args.object_id)
+        if obj_2d is None:
+            print(f"警告: 帧 {frame_id} 中未找到object_id为{args.object_id}的物体")
+            print(f"可用的物体ID: {[obj.object_id for obj in viewer.objects]}")
+            continue
         
         # 创建3D instance
         obj_3d = ThreeDInstance(
@@ -247,73 +234,54 @@ def main():
             ee_pos=viewer.ee_pos,
             ee_ori=viewer.ee_ori
         )
+        instances_3d.append(obj_3d)
+    
+    # 合并多帧点云
+    if len(instances_3d) == 0:
+        print(f"错误: 没有找到任何帧中包含object_id为{args.object_id}的物体")
+        return
+    
+    if args.show_3d:
+        print(f"\n正在合并 {len(instances_3d)} 帧的点云...")
+        print(f"使用视图类型: {args.view_type}")
         
-            # 投影到世界坐标系
         try:
-            # 先检查深度值
-            if args.view_type == 'agentview':
-                depth_full = viewer.depth_agentview
-            else:
-                depth_full = viewer.depth_eye_in_hand
-            
-            print(f"\n深度图信息:")
-            print(f"  深度图形状: {depth_full.shape}")
-            print(f"  深度值范围: [{depth_full.min():.4f}, {depth_full.max():.4f}]")
-            print(f"  深度值均值: {depth_full.mean():.4f}")
-            print(f"  深度值标准差: {depth_full.std():.4f}")
-            
-            # 检查mask区域的深度值
-            mask_region_depth = depth_full[obj_2d.binary_mask > 0]
-            print(f"  Mask区域深度范围: [{mask_region_depth.min():.4f}, {mask_region_depth.max():.4f}]")
-            print(f"  Mask区域深度均值: {mask_region_depth.mean():.4f}")
-            print(f"  Mask区域深度标准差: {mask_region_depth.std():.4f}")
-            
-            # 分析深度值分布
-            depth_range_ratio = (mask_region_depth.max() - mask_region_depth.min()) / mask_region_depth.mean()
-            print(f"  深度变化比例: {depth_range_ratio*100:.2f}% (相对于均值)")
-            if depth_range_ratio < 0.01:
-                print(f"  警告: 深度值变化很小，物体可能确实很薄或深度图精度有限")
-            
-            # 使用米作为深度单位（默认），转换OpenGL深度缓冲值为线性深度
-            points_world = obj_3d.project_to_world_coordinates(
-                view_type=args.view_type, 
-                depth_unit='m',
-                depth_scale=1.0,
-                convert_opengl_depth=True,
-                opengl_near=0.001,  # 可以根据实际情况调整
-                opengl_far=50.0    # 可以根据实际情况调整
-            )
-            print(f"\n3D点云形状: {points_world.shape}")
-            print(f"点云范围（单位：米）:")
-            print(f"  X: [{points_world[:, 0].min():.4f}, {points_world[:, 0].max():.4f}], "
-                  f"范围: {points_world[:, 0].max() - points_world[:, 0].min():.4f} m")
-            print(f"  Y: [{points_world[:, 1].min():.4f}, {points_world[:, 1].max():.4f}], "
-                  f"范围: {points_world[:, 1].max() - points_world[:, 1].min():.4f} m")
-            print(f"  Z: [{points_world[:, 2].min():.4f}, {points_world[:, 2].max():.4f}], "
-                  f"范围: {points_world[:, 2].max() - points_world[:, 2].min():.4f} m")
-            
-            # 获取3D包围盒（转换OpenGL深度缓冲值为线性深度）
-            xyz_min, xyz_max = obj_3d.get_world_bbox3d(
-                view_type=args.view_type, 
+            # 合并多帧点云
+            points_world = merge_multi_frame_pointclouds(
+                instances=instances_3d,
+                view_type=args.view_type,
                 depth_unit='m',
                 depth_scale=1.0,
                 convert_opengl_depth=True,
                 opengl_near=0.001,
-                opengl_far=50.0
+                opengl_far=50.0,
+                denoise=True,
+                denoise_method='combined',  # 使用半径滤波，更适合删除游离点
+                denoise_params={"z_std_ratio": 1.5, "nb_neighbors": 20, "std_ratio": 2.0}  # 更严格的参数：半径0.02米，至少10个邻居
             )
-            print(f"\n3D包围盒（单位：米）:")
+            
+            if len(points_world) == 0:
+                print("错误: 合并后的点云为空")
+                return
+            
+            print(f"\n合并后的3D点云形状: {points_world.shape}")
+            
+            # 计算合并后的3D包围盒
+            xyz_min = points_world.min(axis=0)
+            xyz_max = points_world.max(axis=0)
+            print(f"\n合并后的3D包围盒（单位：米）:")
             print(f"  min: {xyz_min}")
             print(f"  max: {xyz_max}")
             print(f"  尺寸: {xyz_max - xyz_min} m")
             
-            # 可视化点云
+            # 可视化合并后的点云
             visualize_3d_pointcloud(
                 points_world, 
-                title=f"3D Point Cloud - Object ID {args.object_id} ({args.view_type})",
+                title=f"合并点云 - Object ID {args.object_id} ({args.view_type}, {len(instances_3d)}帧)",
                 use_open3d=args.use_open3d
             )
         except Exception as e:
-            print(f"错误: 无法投影到世界坐标系: {e}")
+            print(f"错误: 无法合并点云: {e}")
             import traceback
             traceback.print_exc()
 

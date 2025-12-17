@@ -18,9 +18,19 @@ def main():
     parser.add_argument('--frame_id', type=int, required=True, help='帧ID')
     parser.add_argument('--object_ids', type=int, nargs='+', required=True, 
                        help='要分析的物体ID列表（至少2个）')
-    parser.add_argument('--view_type', type=str, default='agentview',
+    parser.add_argument('--view_type', type=str, default='eye_in_hand',
                        choices=['agentview', 'eye_in_hand'],
                        help='使用的视图类型（默认agentview）')
+    parser.add_argument('--visualize', action='store_true',
+                       help='可视化场景（点云、包围盒和空间关系）')
+    parser.add_argument('--use_open3d', action='store_true',
+                       help='使用open3d进行交互式可视化（需要安装open3d）')
+    parser.add_argument('--show_bbox', action='store_true', default=True,
+                       help='可视化时显示包围盒（默认True）')
+    parser.add_argument('--show_relations', action='store_true', default=True,
+                       help='可视化时显示空间关系（默认True）')
+    parser.add_argument('--show_points', action='store_true', default=True,
+                       help='可视化时显示点云（默认True）')
     args = parser.parse_args()
     
     if len(args.object_ids) < 2:
@@ -62,9 +72,20 @@ def main():
     # 创建场景图分析器
     analyzer = SceneGraphAnalyzer(instances_3d)
     
+    # 定义去噪参数（统一使用）
+    denoise_kwargs = {
+        'denoise': True,
+        'denoise_method': 'combined',
+        'denoise_params': {
+            'z_std_ratio': 1.5,
+            'nb_neighbors': 20,
+            'std_ratio': 2.0
+        }
+    }
+    
     # 打印场景图
     print(f"\n分析 {len(instances_3d)} 个物体的空间关系（视图类型: {args.view_type}）")
-    analyzer.print_scene_graph(view_type=args.view_type)
+    analyzer.print_scene_graph(view_type=args.view_type, **denoise_kwargs)
     
     # 详细分析每对物体的关系
     print(f"\n详细关系分析:")
@@ -72,18 +93,30 @@ def main():
     for i, obj1 in enumerate(instances_3d):
         for j, obj2 in enumerate(instances_3d):
             if i < j:  # 避免重复
-                relations = analyzer.get_spatial_relations(obj1, obj2, view_type=args.view_type)
+                relations = analyzer.get_spatial_relations(obj1, obj2, view_type=args.view_type, **denoise_kwargs)
                 true_relations = [rel for rel, value in relations.items() if value]
                 if true_relations:
                     print(f"物体 {obj1.object_id} 与 物体 {obj2.object_id}:")
                     print(f"  关系: {', '.join(true_relations)}")
                     
                     # 显示包围盒信息
-                    bbox1_min, bbox1_max = analyzer._get_world_bbox(obj1, args.view_type)
-                    bbox2_min, bbox2_max = analyzer._get_world_bbox(obj2, args.view_type)
+                    bbox1_min, bbox1_max = analyzer._get_world_bbox(obj1, args.view_type, **denoise_kwargs)
+                    bbox2_min, bbox2_max = analyzer._get_world_bbox(obj2, args.view_type, **denoise_kwargs)
                     print(f"  物体 {obj1.object_id} 包围盒: min={bbox1_min}, max={bbox1_max}")
                     print(f"  物体 {obj2.object_id} 包围盒: min={bbox2_min}, max={bbox2_max}")
                     print()
+    
+    # 可视化场景
+    if args.visualize:
+        print(f"\n正在可视化场景...")
+        analyzer.visualize_scene(
+            view_type=args.view_type,
+            use_open3d=args.use_open3d,
+            show_bbox=args.show_bbox,
+            show_relations=args.show_relations,
+            show_points=args.show_points,
+            **denoise_kwargs
+        )
 
 
 if __name__ == '__main__':

@@ -127,23 +127,17 @@ class TwoDInstance:
 
 class MaskExtractor:
     """
-    2D Mask提取器类，用于从多物体mask图像中提取所有物体实例。
+    2D Mask Extractor, which extracts single mask from multi-mask image
     
-    属性:
-        original_mask_agentview: agentview视角的原始多物体mask图像
-        original_mask_eye_in_hand: eye_in_hand视角的原始多物体mask图像
-        background_value: 背景像素值（可以是单个值或数组）
-        objects: 提取出的物体实例列表
+    attributes:
+        original_mask_agentview
+        original_mask_eye_in_hand
+        background_value: items' ID refering to the background(floor, ceiling, robot, etc.)
+        objects
     """
     
     def __init__(self, background_value: Union[int, List[int], np.ndarray] = 0):
-        """
-        初始化mask提取器。
-        
-        参数:
-            background_value: 背景像素值，可以是单个整数、整数列表或numpy数组，默认为0
-                            例如: 0, [0, 255], np.array([0, 1, 2])
-        """
+
         self.original_mask_agentview: Optional[np.ndarray] = None
         self.original_mask_eye_in_hand: Optional[np.ndarray] = None
         self.background_value = background_value
@@ -153,13 +147,7 @@ class MaskExtractor:
     
     def load(self, path: str, frame_id: int) -> bool:
         """
-        从文件加载mask图像。
-        
-        参数:
-            mask_path: mask图像路径
-        
-        返回:
-            是否加载成功
+        load mask file
         """
         file = h5py.File(path, 'r')
         mask_agentview = file["data/demo_0/obs/agentview_segmentation"][frame_id]
@@ -178,56 +166,47 @@ class MaskExtractor:
     
     def extract(self, binary: bool = True, view_type: str = 'agentview') -> List[TwoDInstance]:
         """
-        从原始mask中提取所有物体实例。
+        extracts all instances from original mask imagine
         
-        参数:
-            binary: 是否生成二值mask
-            view_type: 使用的视图类型，'agentview' 或 'eye_in_hand'，默认为 'agentview'
-        
-        返回:
-            物体实例列表
         """
-        # 选择要使用的mask
         if view_type == 'agentview':
             if self.original_mask_agentview is None:
-                raise ValueError("请先加载mask图像（使用load()方法）")
+                raise ValueError("please load mask file first")
             original_mask = self.original_mask_agentview
         elif view_type == 'eye_in_hand':
             if self.original_mask_eye_in_hand is None:
-                raise ValueError("请先加载mask图像（使用load()方法）")
+                raise ValueError("please load mask file first")
             original_mask = self.original_mask_eye_in_hand
         else:
-            raise ValueError(f"不支持的视图类型: {view_type}，请使用 'agentview' 或 'eye_in_hand'")
+            raise ValueError(f"view type not supported: {view_type}, please use 'agentview' or 'eye_in_hand'")
         
-        # 获取mask中所有唯一的像素值，这些值代表不同的物体ID
+        # unique item IDs refering to the different item
         unique_values = np.unique(original_mask)
         
-        # 过滤背景值：支持单个值或数组
-        # 如果background_value是数组，使用np.isin()检查元素是否在背景值数组中
+        # filter the background value
         if isinstance(self.background_value, (list, np.ndarray, tuple)):
-            # 多个背景值：使用np.isin()检查元素是否不在背景值数组中
             background_array = np.asarray(self.background_value)
             object_ids = unique_values[~np.isin(unique_values, background_array)]
         else:
-            # 单个背景值：使用!=比较
+            # if single background value
             object_ids = unique_values[unique_values != self.background_value]
         
         self.objects = []
         
         for obj_id in object_ids:
-            # 创建原始mask（物体保持原ID，其他为0）
+
             obj_original_mask = np.zeros_like(original_mask)
             obj_original_mask[original_mask == obj_id] = obj_id
             
-            # 创建二值mask（物体为255，其他为0）
+            # binary_mask: object:255，others:0
             binary_mask = np.zeros_like(original_mask, dtype=np.uint8)
             binary_mask[original_mask == obj_id] = 255
             
-            #作用mask于深度图，得到深度图的物体区域
+        
             obj_depth_agentview = self.depth_agentview[obj_original_mask > 0]
             obj_depth_eye_in_hand = self.depth_eye_in_hand[obj_original_mask > 0]
             
-            # 创建物体实例
+    
             obj = TwoDInstance(obj_id, obj_original_mask, binary_mask, obj_depth_agentview, obj_depth_eye_in_hand)
             self.objects.append(obj)
         
@@ -235,11 +214,7 @@ class MaskExtractor:
     
     def ee_pos_ori_to_extrinsic_matrix(self, ee_pos: np.ndarray, ee_ori: np.ndarray) -> np.ndarray:
         """
-        将ee_pos和ee_ori转换为extrinsic矩阵。
-        
-        参数:
-            ee_pos: ee_pos
-            ee_ori: ee_ori
+        transfer the position and orientation of end-effector into camera extrinsic
         """
         ee_pos = self.ee_pos
         ee_ori = self.ee_ori
@@ -249,19 +224,10 @@ class MaskExtractor:
     def save_all(self, output_dir: str, base_name: str = "mask", 
                  format: str = 'png', binary: bool = True) -> List[str]:
         """
-        保存所有物体的mask到指定目录。
-        
-        参数:
-            output_dir: 输出目录
-            base_name: 输出文件的基础名称
-            format: 输出格式 ('png', 'jpg', 'jpeg')
-            binary: 是否保存二值mask
-        
-        返回:
-            保存的文件路径列表
+        save the mask of all item to the directory
         """
         if len(self.objects) == 0:
-            print("警告: 没有物体需要保存，请先调用extract()方法")
+            print("warning:no mask extracted")
             return []
         
         os.makedirs(output_dir, exist_ok=True)
@@ -273,35 +239,16 @@ class MaskExtractor:
             
             if obj.save(output_path, binary):
                 saved_paths.append(output_path)
-                print(f"已保存: {output_path}")
+                print(f"saved in: {output_path}")
             else:
-                print(f"警告: 保存失败: {output_path}")
+                print(f"fails: {output_path}")
         
         return saved_paths
     
     def get_object_by_id(self, object_id: int) -> Optional[TwoDInstance]:
-        """
-        根据物体ID获取物体实例。
-        
-        参数:
-            object_id: 物体ID
-        
-        返回:
-            物体实例，如果不存在则返回NoneS
-        """
+
         for obj in self.objects:
             if obj.object_id == object_id:
                 return obj
         return None
     
-    def __len__(self) -> int:
-        """返回物体数量。"""
-        return len(self.objects)
-    
-    def __iter__(self):
-        """使对象可迭代。"""
-        return iter(self.objects)
-    
-    def __repr__(self) -> str:
-        """返回对象的字符串表示。"""
-        return f"MaskExtractor(background={self.background_value}, objects={len(self.objects)})"

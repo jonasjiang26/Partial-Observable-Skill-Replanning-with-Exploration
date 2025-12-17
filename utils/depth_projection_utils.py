@@ -2,63 +2,43 @@
 import numpy as np
 import h5py
 import cv2
-from typing import Optional, Tuple, Union
+from typing import Optional, Tuple, Union, List, Dict
 import os
 
 from utils.mask_utils import TwoDInstance
 
-# 相机外参配置（世界坐标系中的相机位姿）
-# 注意：这是类级别的配置，可以通过 set_camera_extrinsic 方法修改
 _CAMERA_EXTRINSICS = {
     'agentview': {
         'pos': np.array([0.6586131746834771, 0.0, 1.6103500240372423]),  # (x, y, z)
         'quat': np.array([0.6380177736282349, 0.3048497438430786, 0.30484986305236816, 0.6380177736282349])  # (w, x, y, z)
     },
-    # eye_in_hand 相机通常固定在末端执行器上，使用 ee_pos 和 ee_ori
-    'eye_in_hand': None  # 将使用 ee_pos 和 ee_ori
+    'eye_in_hand': None  # uses ee_pos and ee_ori
 }
 
-# 相机内参配置（可选，如果提供则使用，否则根据视场角计算）
-# 格式：{'agentview': {'fx': ..., 'fy': ..., 'cx': ..., 'cy': ...}, ...}
-# fx, fy 的单位应该是"像素/米"（如果深度值单位是米）
+
 _CAMERA_INTRINSICS = {
     'agentview': None,  # 如果为None，则根据视场角计算
     'eye_in_hand': None
 }
 
+# 末端执行器 -> eye_in_hand 相机的固定变换（如果未设置则假设重合）
+_EE_TO_EYE_IN_HAND_TRANSFORM = None
+
 def set_camera_extrinsic(view_type: str, pos: np.ndarray, quat: np.ndarray):
-    """
-    设置相机外参。
-    
-    参数:
-        view_type: 'agentview' 或 'eye_in_hand'
-        pos: 相机位置 [x, y, z]
-        quat: 相机四元数 [w, x, y, z]
-    """
+
     global _CAMERA_EXTRINSICS
     if view_type not in ['agentview', 'eye_in_hand']:
-        raise ValueError(f"不支持的视图类型: {view_type}")
+        raise ValueError(f"view type not supported: {view_type}")
     _CAMERA_EXTRINSICS[view_type] = {
         'pos': np.array(pos),
         'quat': np.array(quat)
     }
 
-def get_camera_extrinsic_config(view_type: str):
-    """获取相机外参配置（用于查看）"""
-    return _CAMERA_EXTRINSICS.get(view_type)
-
 def set_camera_intrinsic(view_type: str, fx: float, fy: float, cx: float, cy: float):
-    """
-    设置相机内参。
-    
-    参数:
-        view_type: 'agentview' 或 'eye_in_hand'
-        fx, fy: 焦距（单位：像素/米，如果深度值单位是米）
-        cx, cy: 主点坐标（单位：像素）
-    """
+
     global _CAMERA_INTRINSICS
     if view_type not in ['agentview', 'eye_in_hand']:
-        raise ValueError(f"不支持的视图类型: {view_type}")
+        raise ValueError(f"view type not supported: {view_type}")
     _CAMERA_INTRINSICS[view_type] = {
         'fx': fx,
         'fy': fy,
@@ -66,9 +46,24 @@ def set_camera_intrinsic(view_type: str, fx: float, fy: float, cx: float, cy: fl
         'cy': cy
     }
 
-def get_camera_intrinsic_config(view_type: str):
-    """获取相机内参配置（用于查看）"""
-    return _CAMERA_INTRINSICS.get(view_type)
+
+def set_ee_to_eye_in_hand_transform(pos: np.ndarray, quat: np.ndarray):
+    """
+    设置末端执行器到eye_in_hand相机的固定变换 T_ee_cam。
+    参数:
+        pos: 相机相对于末端执行器的位置 (x, y, z)，单位：米
+        quat: 相机相对于末端执行器的姿态四元数 (w, x, y, z)
+    """
+    global _EE_TO_EYE_IN_HAND_TRANSFORM
+    _EE_TO_EYE_IN_HAND_TRANSFORM = {
+        'pos': np.array(pos),
+        'quat': np.array(quat)
+    }
+
+
+def get_ee_to_eye_in_hand_transform() -> Optional[Dict]:
+    """获取末端执行器到eye_in_hand相机的固定变换。"""
+    return _EE_TO_EYE_IN_HAND_TRANSFORM
 
 def opengl_depth_to_linear(depth_buffer: np.ndarray, near: float = 0.01, far: float = 10.0) -> np.ndarray:
     """
@@ -90,7 +85,6 @@ def opengl_depth_to_linear(depth_buffer: np.ndarray, near: float = 0.01, far: fl
     返回:
         线性深度值（米）
     """
-    # 确保深度值在有效范围内
     depth_buffer = np.clip(depth_buffer, 0.0, 1.0)
     
     # OpenGL深度缓冲到线性深度的转换
@@ -211,24 +205,13 @@ def z_value_filter(points: np.ndarray,
 
 
 def quaternion_to_rotation_matrix(quat: np.ndarray) -> np.ndarray:
-    """
-    将四元数转换为旋转矩阵。
-    
-    参数:
-        quat: 四元数 [w, x, y, z]
-    
-    返回:
-        3x3旋转矩阵
-    """
     w, x, y, z = quat
-    
-    # 归一化
+
     norm = np.sqrt(w*w + x*x + y*y + z*z)
     if norm < 1e-8:
         return np.eye(3)
     w, x, y, z = w/norm, x/norm, y/norm, z/norm
     
-    # 转换为旋转矩阵
     R = np.array([
         [1 - 2*(y*y + z*z), 2*(x*y - w*z), 2*(x*z + w*y)],
         [2*(x*y + w*z), 1 - 2*(x*x + z*z), 2*(y*z - w*x)],
@@ -263,22 +246,17 @@ class ThreeDInstance(TwoDInstance):
         self._depth_agentview_full = depth_agentview_full
         self._depth_eye_in_hand_full = depth_eye_in_hand_full
         # 缓存不同视图的变换矩阵
-        self._T_w_cam = {}  # 世界坐标系 -> 相机坐标系 (按view_type缓存)
-        self._T_cam_w = {}  # 相机坐标系 -> 世界坐标系 (按view_type缓存)
+        self._T_w_cam = {}  # 摄像机坐标系 -> 世界坐标系 (按view_type缓存)
     
     def load(self, path: str, frame_id: int) -> bool:
-        """从h5文件加载ee_pos和ee_ori"""
         file = h5py.File(path, 'r')
         ee_ori = file["data/demo_0/obs/ee_ori"][frame_id]
         ee_pos = file["data/demo_0/obs/ee_pos"][frame_id]
         self.ee_ori = ee_ori
         self.ee_pos = ee_pos
-        # 清除缓存的变换矩阵，需要重新计算
         self._T_w_cam = {}
-        self._T_cam_w = {}
         return True
     
-    @property
     def axisangle_to_rotation_matrix(self) -> np.ndarray:
         """
         将轴角(axis-angle)转换为旋转矩阵（使用Rodrigues公式）。
@@ -310,52 +288,93 @@ class ThreeDInstance(TwoDInstance):
 
     def get_camera_extrinsic(self, view_type: str = 'agentview') -> np.ndarray:
         """
-        根据view_type获取世界坐标系到相机坐标系的变换矩阵 T_w_cam。
+        根据view_type获取摄像机到世界坐标系的变换矩阵 T_cam_w。
+        
+        这个函数返回摄像机坐标系到世界坐标系的变换矩阵。
+        给定摄像机中的一点 p_cam，可以通过以下方式得到世界坐标系中的点：
+        p_world = T_cam_w @ p_cam_homo
         
         参数:
             view_type: 'agentview' 或 'eye_in_hand'
         
         返回:
-            4x4齐次变换矩阵 T_w_cam（世界坐标系 -> 相机坐标系）
+            4x4齐次变换矩阵 T_cam_w（摄像机坐标系 -> 世界坐标系）
         """
         if view_type in self._T_w_cam:
             return self._T_w_cam[view_type]
         
-        T_w_cam = np.eye(4)
+        # T_cam_w = [R_cam_w | t_cam_w]
+        # 其中 R_cam_w 是从摄像机到世界的旋转
+        # t_cam_w 是摄像机在世界坐标系中的位置
+        T_cam_w = np.eye(4)
         
         if view_type == 'agentview':
             # 使用固定的agentview相机外参
             if _CAMERA_EXTRINSICS['agentview'] is None:
                 raise ValueError("agentview相机外参未配置，请使用 set_camera_extrinsic() 设置")
             
-            cam_pos = _CAMERA_EXTRINSICS['agentview']['pos']
+            cam_pos = _CAMERA_EXTRINSICS['agentview']['pos']  # 摄像机在世界坐标系中的位置
             cam_quat = _CAMERA_EXTRINSICS['agentview']['quat']
             
-            # 四元数转旋转矩阵
-            R_w_cam = quaternion_to_rotation_matrix(cam_quat)
-            T_w_cam[:3, :3] = R_w_cam
-            T_w_cam[:3, 3] = cam_pos
+            # 四元数转旋转矩阵（这是摄像机的方向）
+            # 注意：根据四元数的定义，这给出的可能是世界->摄像机的旋转
+            # 我们需要的是摄像机->世界的旋转，所以需要转置
+            R_w_cam = quaternion_to_rotation_matrix(cam_quat)  # 世界->摄像机
+            R_cam_w = R_w_cam.T  # 摄像机->世界（通过转置得到逆矩阵）
+            
+            T_cam_w[:3, :3] = R_cam_w
+            T_cam_w[:3, 3] = cam_pos
             
             # 调试信息：检查变换矩阵
             print(f"  Agentview相机外参:")
-            print(f"    位置: {cam_pos}")
+            print(f"    摄像机位置（世界坐标系）: {cam_pos}")
             print(f"    四元数: {cam_quat}")
-            print(f"    旋转矩阵 R_w_cam:\n{R_w_cam}")
-            print(f"    T_w_cam (世界->相机):\n{T_w_cam}")
+            print(f"    R_w_cam (世界->摄像机):\n{R_w_cam}")
+            print(f"    R_cam_w (摄像机->世界):\n{R_cam_w}")
+            print(f"    T_cam_w (摄像机->世界):\n{T_cam_w}")
             
         elif view_type == 'eye_in_hand':
-            # eye_in_hand相机固定在末端执行器上，使用ee_pos和ee_ori
+            # eye_in_hand 相机固定在末端执行器上：T_cam_w = (T_w_ee @ T_ee_cam)^-1
             if self.ee_pos is None or self.ee_ori is None:
                 raise ValueError("ee_pos和ee_ori未设置，请先调用load()方法")
             
-            R_w_cam = self.axisangle_to_rotation_matrix
-            T_w_cam[:3, :3] = R_w_cam
-            T_w_cam[:3, 3] = self.ee_pos.reshape(3,)
+            # 1) 世界->末端执行器
+            R_w_ee = self.axisangle_to_rotation_matrix()  # 世界->ee
+            T_w_ee = np.eye(4)
+            T_w_ee[:3, :3] = R_w_ee
+            T_w_ee[:3, 3] = self.ee_pos.reshape(3,)
+            
+            # 2) 末端执行器->相机（如果未设置，默认单位变换）
+            if _EE_TO_EYE_IN_HAND_TRANSFORM is None:
+                T_ee_cam = np.eye(4)
+                print("  警告: 未设置末端执行器到相机的变换，假设相机与末端执行器重合")
+            else:
+                ee_to_cam_pos = _EE_TO_EYE_IN_HAND_TRANSFORM['pos']
+                ee_to_cam_quat = _EE_TO_EYE_IN_HAND_TRANSFORM['quat']
+                R_ee_cam = quaternion_to_rotation_matrix(ee_to_cam_quat)
+                T_ee_cam = np.eye(4)
+                T_ee_cam[:3, :3] = R_ee_cam
+                T_ee_cam[:3, 3] = ee_to_cam_pos
+            
+            # 3) 世界->相机
+            T_w_cam_full = T_w_ee @ T_ee_cam  # 世界->相机
+            T_cam_w = np.linalg.inv(T_w_cam_full)  # 相机->世界
+            
+            # 调试信息
+            print("  Eye-in-hand相机外参计算:")
+            print(f"    末端执行器位置(ee_pos): {self.ee_pos}")
+            print(f"    末端执行器姿态(ee_ori axis-angle): {self.ee_ori}")
+            if _EE_TO_EYE_IN_HAND_TRANSFORM is not None:
+                print(f"    相机相对末端执行器位置: {ee_to_cam_pos}")
+                print(f"    相机相对末端执行器姿态(四元数): {ee_to_cam_quat}")
+            print(f"    T_w_ee (世界->末端执行器):\n{T_w_ee}")
+            print(f"    T_ee_cam (末端执行器->相机):\n{T_ee_cam}")
+            print(f"    T_cam_w (相机->世界):\n{T_cam_w}")
         else:
             raise ValueError(f"不支持的视图类型: {view_type}")
         
-        self._T_w_cam[view_type] = T_w_cam
-        return T_w_cam
+        self._T_w_cam[view_type] = T_cam_w
+        return T_cam_w
     
     def get_camera_to_world_transform(self, view_type: str = 'agentview') -> np.ndarray:
         """
@@ -368,14 +387,8 @@ class ThreeDInstance(TwoDInstance):
         返回:
             4x4齐次变换矩阵 T_cam_w（相机坐标系 -> 世界坐标系）
         """
-        if view_type in self._T_cam_w:
-            return self._T_cam_w[view_type]
-        
-        # T_cam_w = T_w_cam^-1
-        T_w_cam = self.get_camera_extrinsic(view_type)
-        T_cam_w = np.linalg.inv(T_w_cam)
-        self._T_cam_w[view_type] = T_cam_w
-        return T_cam_w
+        # get_camera_extrinsic() 现在直接返回 T_cam_w
+        return self.get_camera_extrinsic(view_type)
     def get_intrinsic_matrix(self, view_type: str = 'agentview') -> np.ndarray:
         """
         获取相机内参矩阵。
@@ -413,8 +426,16 @@ class ThreeDInstance(TwoDInstance):
         else:
             raise ValueError(f"不支持的mask形状: {self.shape}，期望2D (H, W)")
         
-        fovy = 75.0  # 垂直视场角（度）
+        if view_type == "eye_in_hand":
+            
+            fovy = 75.0
+        elif view_type == "agentview":
+            fovy = 45.0
+        else:
+            raise ValueError(f"viewtype not supported:{view_type}")
+        
         fovy_rad = fovy * np.pi / 180.0
+
         
         # 计算焦距（单位：像素/米）
         # 注意：这个公式假设传感器物理尺寸与像素数成正比
@@ -431,15 +452,13 @@ class ThreeDInstance(TwoDInstance):
         
         intrinsic_matrix = np.array([[fx, 0, cx], [0, fy, cy], [0, 0, 1]])
         
-        # 调试信息
         print(f"  内参矩阵计算（基于视场角）:")
         print(f"    图像尺寸: {W}x{H} 像素")
         print(f"    视场角: {fovy}度")
         print(f"    fx={fx:.2f} 像素/米, fy={fy:.2f} 像素/米")
         print(f"    cx={cx:.2f} 像素, cy={cy:.2f} 像素")
         print(f"    警告: 这个计算假设传感器物理尺寸与像素数成正比")
-        print(f"          如果结果不正确，请使用 set_camera_intrinsic() 设置准确的内参")
-        
+                
         return intrinsic_matrix
 
     def backproject_depth_to_camera_frame(self, view_type: str = 'agentview', 
@@ -578,7 +597,7 @@ class ThreeDInstance(TwoDInstance):
         return points_cam
     
     def denoise_pointcloud(self, points: np.ndarray,
-                          method: str = 'statistical',
+                          method: str = 'radius',
                           **kwargs) -> np.ndarray:
         """
         对点云进行去噪处理。
@@ -746,3 +765,187 @@ class ThreeDInstance(TwoDInstance):
         xyz_min = points_world.min(axis=0)
         xyz_max = points_world.max(axis=0)
         return xyz_min, xyz_max
+
+
+def merge_multi_frame_pointclouds(instances: List[ThreeDInstance],
+                                  view_type: str = 'agentview',
+                                  depth_unit: str = 'm',
+                                  depth_scale: float = 1.0,
+                                  convert_opengl_depth: bool = True,
+                                  opengl_near: float = 0.01,
+                                  opengl_far: float = 10.0,
+                                  denoise: bool = True,
+                                  denoise_method: str = 'statistical',
+                                  denoise_params: Optional[Dict] = None,
+                                  return_per_frame: bool = False) -> Union[np.ndarray, Tuple[np.ndarray, List[np.ndarray]]]:
+    """
+    合并多帧图像中同一个物体的点云到世界坐标系。
+    
+    参数:
+        instances: ThreeDInstance对象列表，每个对应一帧图像中的同一个物体
+        view_type: 'agentview' 或 'eye_in_hand'，默认'agentview'
+        depth_unit: 深度值单位，'m'（米）或 'cm'（厘米），默认为 'm'
+        depth_scale: 深度值缩放因子，默认为1.0（不缩放）
+        convert_opengl_depth: 是否将OpenGL深度缓冲值转换为线性深度，默认为True
+        opengl_near: OpenGL近裁剪平面距离（米），默认0.01
+        opengl_far: OpenGL远裁剪平面距离（米），默认10.0
+        denoise: 是否对点云进行去噪，默认True
+        denoise_method: 去噪方法，默认'statistical'
+        denoise_params: 去噪参数字典，如果为None则使用默认值
+    
+    返回:
+        合并后的点云 (N, 3)，单位：米
+    """
+    if len(instances) == 0:
+        return np.empty((0, 3))
+    
+    # 检查所有实例是否具有相同的object_id
+    object_ids = [inst.object_id for inst in instances]
+    if len(set(object_ids)) > 1:
+        print(f"警告: 合并的点云来自不同的物体ID: {object_ids}")
+    
+    # 对每一帧投影到世界坐标系并收集点云
+    all_points = []
+    for i, instance in enumerate(instances):
+        points_world = instance.project_to_world_coordinates(
+            view_type=view_type,
+            depth_unit=depth_unit,
+            depth_scale=depth_scale,
+            convert_opengl_depth=convert_opengl_depth,
+            opengl_near=opengl_near,
+            opengl_far=opengl_far,
+            denoise=denoise,
+            denoise_method=denoise_method,
+            denoise_params=denoise_params
+        )
+        if len(points_world) > 0:
+            all_points.append(points_world)
+            print(f"  帧 {i+1}: 添加了 {len(points_world)} 个点")
+    
+    # 合并所有点云
+    if len(all_points) == 0:
+        return np.empty((0, 3))
+    
+    merged_points = np.vstack(all_points)
+    print(f"\n合并后的点云:")
+    print(f"  总点数: {len(merged_points)}")
+    unit_label = "cm" if depth_unit == 'cm' else "m"
+    print(f"  世界坐标系点云范围（单位：{unit_label}）:")
+    print(f"    X: [{merged_points[:, 0].min():.4f}, {merged_points[:, 0].max():.4f}], "
+          f"范围: {merged_points[:, 0].max() - merged_points[:, 0].min():.4f} {unit_label}")
+    print(f"    Y: [{merged_points[:, 1].min():.4f}, {merged_points[:, 1].max():.4f}], "
+          f"范围: {merged_points[:, 1].max() - merged_points[:, 1].min():.4f} {unit_label}")
+    print(f"    Z: [{merged_points[:, 2].min():.4f}, {merged_points[:, 2].max():.4f}], "
+          f"范围: {merged_points[:, 2].max() - merged_points[:, 2].min():.4f} {unit_label}")
+    
+    return merged_points
+
+
+def register_and_merge_pointclouds(instances: List[ThreeDInstance],
+                                   view_type: str = 'agentview',
+                                   depth_unit: str = 'm',
+                                   depth_scale: float = 1.0,
+                                   convert_opengl_depth: bool = True,
+                                   opengl_near: float = 0.01,
+                                   opengl_far: float = 10.0,
+                                   denoise: bool = True,
+                                   denoise_method: str = 'statistical',
+                                   denoise_params: Optional[Dict] = None,
+                                   voxel_size: float = 0.01,
+                                   icp_max_corr_factor: float = 1.5,
+                                   icp_max_iter: int = 50,
+                                   return_per_frame: bool = False) -> Union[np.ndarray, Tuple[np.ndarray, List[np.ndarray]]]:
+    """
+    使用Open3D对多帧同一物体的点云进行ICP配准并融合。
+    如果未安装open3d，则退化为简单合并。
+    """
+    if len(instances) == 0:
+        return np.empty((0, 3))
+    
+    try:
+        import open3d as o3d
+    except ImportError:
+        print("警告: 未安装open3d，使用简单合并")
+        merged = merge_multi_frame_pointclouds(
+            instances=instances,
+            view_type=view_type,
+            depth_unit=depth_unit,
+            depth_scale=depth_scale,
+            convert_opengl_depth=convert_opengl_depth,
+            opengl_near=opengl_near,
+            opengl_far=opengl_far,
+            denoise=denoise,
+            denoise_method=denoise_method,
+            denoise_params=denoise_params,
+        )
+        return (merged, [merged]) if return_per_frame else merged
+
+    # 投影每帧点云到世界坐标系
+    points_per_frame = []
+    for i, instance in enumerate(instances):
+        pts = instance.project_to_world_coordinates(
+            view_type=view_type,
+            depth_unit=depth_unit,
+            depth_scale=depth_scale,
+            convert_opengl_depth=convert_opengl_depth,
+            opengl_near=opengl_near,
+            opengl_far=opengl_far,
+            denoise=denoise,
+            denoise_method=denoise_method,
+            denoise_params=denoise_params
+        )
+        if len(pts) == 0:
+            continue
+        points_per_frame.append(pts)
+        center = pts.mean(axis=0)
+        print(f"  帧 {i+1}: 点数={len(pts)}, 中心={center}")
+
+    if len(points_per_frame) == 0:
+        return np.empty((0, 3))
+    if len(points_per_frame) == 1:
+        return (points_per_frame[0], points_per_frame) if return_per_frame else points_per_frame[0]
+
+    # 转为Open3D点云并下采样
+    pcds = []
+    for pts in points_per_frame:
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(pts)
+        if voxel_size > 0:
+            pcd = pcd.voxel_down_sample(voxel_size)
+        pcd.estimate_normals(
+            o3d.geometry.KDTreeSearchParamHybrid(radius=voxel_size * 2, max_nn=30)
+        )
+        pcds.append(pcd)
+
+    # 以第一帧为参考，逐帧ICP对齐
+    ref = pcds[0]
+    aligned_pcds = [ref]
+    max_corr = voxel_size * icp_max_corr_factor
+    criteria = o3d.pipelines.registration.ICPConvergenceCriteria(max_iteration=icp_max_iter)
+
+    for idx in range(1, len(pcds)):
+        src = pcds[idx]
+        result = o3d.pipelines.registration.registration_icp(
+            src, ref, max_corr, np.eye(4),
+            o3d.pipelines.registration.TransformationEstimationPointToPlane(),
+            criteria
+        )
+        src_aligned = o3d.geometry.PointCloud(src)
+        src_aligned.transform(result.transformation)
+        aligned_pcds.append(src_aligned)
+        print(f"  帧 {idx+1}: ICP fitness={result.fitness:.3f}, rmse={result.inlier_rmse:.4f}")
+
+    # 融合
+    merged_points = np.vstack([np.asarray(p.points) for p in aligned_pcds])
+
+    # 统计信息
+    unit_label = "cm" if depth_unit == 'cm' else "m"
+    print(f"\nICP融合后的点云: 总点数={len(merged_points)}")
+    print(f"  X范围: [{merged_points[:,0].min():.4f}, {merged_points[:,0].max():.4f}] {unit_label}")
+    print(f"  Y范围: [{merged_points[:,1].min():.4f}, {merged_points[:,1].max():.4f}] {unit_label}")
+    print(f"  Z范围: [{merged_points[:,2].min():.4f}, {merged_points[:,2].max():.4f}] {unit_label}")
+
+    if return_per_frame:
+        aligned_np = [np.asarray(p.points) for p in aligned_pcds]
+        return merged_points, aligned_np
+    return merged_points

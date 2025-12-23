@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
 
+from re import X
 import h5py
 import numpy as np
 import cv2
 from typing import List, Optional, Tuple, Union, Dict
 import os
+import json
 import trimesh
-from utils.depth_projection_utils import ThreeDInstance
 import matplotlib.pyplot as plt
 MATPLOTLIB_AVAILABLE = True
 OPEN3D_AVAILABLE = True
@@ -14,12 +15,23 @@ import open3d as o3d
 
 from mpl_toolkits.mplot3d import Axes3D
 from mpl_toolkits.mplot3d.art3d import Line3DCollection
+
+class MergedThreeDInstance:
+    
+    def __init__(self, instance: str, merged_points: np.ndarray):
+        self.instance = instance
+        self.merged_points = merged_points
+        self.merged_bbox = np.array([merged_points.min(axis=0), merged_points.max(axis=0)])
+        self.merged_mesh = trimesh.Trimesh(vertices=merged_points, faces=None)
+
+
+
 class SceneGraphAnalyzer:
     """
     场景图分析器，用于分析多个3D实例之间的空间关系。
     """
     
-    def __init__(self, instances: List[ThreeDInstance]):
+    def __init__(self, instances: List[MergedThreeDInstance]):
         """
         初始化场景图分析器。
         
@@ -30,40 +42,13 @@ class SceneGraphAnalyzer:
         self._world_points_cache = {}  # 缓存每个实例的世界坐标点云
         self._world_bbox_cache = {}    # 缓存每个实例的世界坐标包围盒
         self._watertight_mesh_cache = {}  # 缓存每个实例的watertight mesh
-    
-    def _get_world_points(self, instance: ThreeDInstance, view_type: str = 'agentview',
-                         **kwargs) -> np.ndarray:
-        """
-        获取实例的世界坐标点云（带缓存）
-        
-        参数:
-            instance: ThreeDInstance对象
-            view_type: 视图类型
-            **kwargs: 传递给project_to_world_coordinates的其他参数
-        
-        返回:
-            世界坐标系下的点云 (N, 3) numpy数组
-        """
-        cache_key = (id(instance), view_type, str(kwargs))
-        if cache_key not in self._world_points_cache:
-            points = instance.project_to_world_coordinates(view_type=view_type, **kwargs)
-            self._world_points_cache[cache_key] = points
-            # 同时缓存mesh（如果trimesh可用）
-            if trimesh is not None:
-                mesh = self.get_watertight_mesh_from_points(points)
-                self._watertight_mesh_cache[cache_key] = mesh
-        return self._world_points_cache[cache_key]
-    
-    def _get_world_bbox(self, instance: ThreeDInstance, view_type: str = 'agentview',
-                       **kwargs) -> Tuple[np.ndarray, np.ndarray]:
-        """获取实例的世界坐标包围盒（带缓存）"""
-        cache_key = (id(instance), view_type, str(kwargs))
-        if cache_key not in self._world_bbox_cache:
-            bbox = instance.get_world_bbox3d(view_type=view_type, **kwargs)
-            self._world_bbox_cache[cache_key] = bbox
-        return self._world_bbox_cache[cache_key]
 
-    def  get_watertight_mesh(self, instance: ThreeDInstance, view_type: str = 'agentview',
+    def _get_world_bbox(self, instance: MergedThreeDInstance):
+        xyz_min, xyz_max = instance.merged_points.min(axis=0), instance.merged_points.max(axis=0)
+        return xyz_min, xyz_max
+    
+    def  get_watertight_mesh(self, instance: MergedThreeDInstance,
+                             view_type: str = 'agentview',
                              **kwargs) -> Optional['trimesh.Trimesh']:
         """
         获取实例的watertight mesh（带缓存）
@@ -113,11 +98,8 @@ class SceneGraphAnalyzer:
         mesh = trimesh.Trimesh(vertices=points, faces=None)
         return mesh
     
-    def is_on(self, obj1: ThreeDInstance, obj2: ThreeDInstance, 
-              view_type: str = 'agentview',
-              z_threshold: float = 0.01,
-              overlap_ratio: float = 0.3,
-              **kwargs) -> bool:
+    def is_on(self, obj1: MergedThreeDInstance, obj2: MergedThreeDInstance,
+              z_threshold: float = 0.03) -> bool:
         """
         判断obj1是否在obj2上方（on关系）。
         
@@ -137,43 +119,27 @@ class SceneGraphAnalyzer:
         返回:
             True如果obj1在obj2上方
         """
-        bbox1_min, bbox1_max = self._get_world_bbox(obj1, view_type, **kwargs)
-        bbox2_min, bbox2_max = self._get_world_bbox(obj2, view_type, **kwargs)
+        bbox1_min, bbox1_max = self._get_world_bbox(obj1)
+        bbox2_min, bbox2_max = self._get_world_bbox(obj2)
         
         # 检查Z轴关系：obj1的底部应该高于obj2的顶部
         obj1_bottom = bbox1_min[2]
         obj2_top = bbox2_max[2]
         
-        if obj1_bottom < obj2_top + z_threshold:
+        
+        if obj1_bottom > obj2_top - z_threshold and obj1_bottom < obj2_top + z_threshold:
+            center1_x = (bbox1_min[0] + bbox1_max[0]) / 2
+            center1_y = (bbox1_min[1] + bbox1_max[1]) / 2
+
+            if center1_x > bbox2_min[0] and center1_x < bbox2_max[0] and center1_y > bbox2_min[1] and center1_y < bbox2_max[1]:
+                return True
+            else:
+                return False
+        else:
             return False
-        
-        # 检查XY平面投影是否重叠
-        # obj1在XY平面的投影
-        obj1_x_min, obj1_x_max = bbox1_min[0], bbox1_max[0]
-        obj1_y_min, obj1_y_max = bbox1_min[1], bbox1_max[1]
-        
-        # obj2在XY平面的投影
-        obj2_x_min, obj2_x_max = bbox2_min[0], bbox2_max[0]
-        obj2_y_min, obj2_y_max = bbox2_min[1], bbox2_max[1]
-        
-        # 计算重叠区域
-        overlap_x = max(0, min(obj1_x_max, obj2_x_max) - max(obj1_x_min, obj2_x_min))
-        overlap_y = max(0, min(obj1_y_max, obj2_y_max) - max(obj1_y_min, obj2_y_min))
-        overlap_area = overlap_x * overlap_y
-        
-        # 计算obj1的投影面积
-        obj1_area = (obj1_x_max - obj1_x_min) * (obj1_y_max - obj1_y_min)
-        
-        # 如果重叠面积占obj1投影面积的比例超过阈值，认为有重叠
-        if obj1_area > 0:
-            overlap_ratio_actual = overlap_area / obj1_area
-            return overlap_ratio_actual >= overlap_ratio
-        
-        return False
     
-    def is_in(self, obj1: ThreeDInstance, obj2: ThreeDInstance,
-              view_type: str = 'agentview',
-              containment_ratio: float = 0.8,
+    def is_in(self, obj1: MergedThreeDInstance, obj2: MergedThreeDInstance,
+              containment_ratio: float = 0.9,
               **kwargs) -> bool:
         """
         判断obj1是否在obj2内部（in关系）。
@@ -192,8 +158,8 @@ class SceneGraphAnalyzer:
         返回:
             True如果obj1在obj2内部
         """
-        bbox1_min, bbox1_max = self._get_world_bbox(obj1, view_type, **kwargs)
-        bbox2_min, bbox2_max = self._get_world_bbox(obj2, view_type, **kwargs)
+        bbox1_min, bbox1_max = self._get_world_bbox(obj1, **kwargs)
+        bbox2_min, bbox2_max = self._get_world_bbox(obj2, **kwargs)
         
         # 方法1：基于包围盒的包含关系
         # 检查obj1的包围盒是否大部分在obj2的包围盒内
@@ -217,7 +183,7 @@ class SceneGraphAnalyzer:
                 return True
         
         # 方法2：基于点云的包含关系（更准确）
-        points1 = self._get_world_points(obj1, view_type, **kwargs)
+        points1 = obj1.merged_points
         if len(points1) == 0:
             return False
         
@@ -227,11 +193,9 @@ class SceneGraphAnalyzer:
         
         return inside_ratio >= containment_ratio
     
-    def is_under(self, obj1: ThreeDInstance, obj2: ThreeDInstance,
-                 view_type: str = 'agentview',
-                 z_threshold: float = 0.01,
-                 overlap_ratio: float = 0.3,
-                 **kwargs) -> bool:
+    def is_under(self, obj1: MergedThreeDInstance, obj2: MergedThreeDInstance,
+                 z_threshold: float = 0.03
+                 ) -> bool:
         """
         判断obj1是否在obj2下方（under关系）。
         
@@ -247,78 +211,47 @@ class SceneGraphAnalyzer:
             True如果obj1在obj2下方
         """
         # under关系就是on关系的反向
-        return self.is_on(obj2, obj1, view_type, z_threshold, overlap_ratio, **kwargs)
+        bbox1_min, bbox1_max = self._get_world_bbox(obj1)
+        bbox2_min, bbox2_max = self._get_world_bbox(obj2)
+        
+        # 检查Z轴关系：obj1的底部应该高于obj2的顶部
+        obj1_top = bbox1_max[2]
+        obj2_bottom = bbox2_min[2]
+        
+        
+        if obj1_top < obj2_bottom + z_threshold and obj1_top > obj2_bottom - z_threshold:
+            center1_x = (bbox1_min[0] + bbox1_max[0]) / 2
+            center1_y = (bbox1_min[1] + bbox1_max[1]) / 2
+            if bbox1_max[0] < bbox2_min[0] or bbox1_min[0] > bbox2_max[0] or bbox1_max[1] < bbox2_min[1] or bbox1_min[1] > bbox2_max[1]:
+                return False
+            else:
+                return True
+        else:
+            return False
     
-    def is_above(self, obj1: ThreeDInstance, obj2: ThreeDInstance,
-                 view_type: str = 'agentview',
-                 z_threshold: float = 0.05,
-                 **kwargs) -> bool:
+    def is_left(self, obj1: MergedThreeDInstance, obj2: MergedThreeDInstance,
+                overlap_ratio: float = 0.5,
+                **kwargs) -> bool:
         """
-        判断obj1是否在obj2上方（above关系，不要求接触）。
-        
-        参数:
-            obj1: 上方的物体
-            obj2: 下方的物体
-            view_type: 使用的视图类型
-            z_threshold: Z轴最小距离阈值（米）
-            **kwargs: 传递给project_to_world_coordinates的其他参数
-        
-        返回:
-            True如果obj1在obj2上方
-        """
-        bbox1_min, bbox1_max = self._get_world_bbox(obj1, view_type, **kwargs)
-        bbox2_min, bbox2_max = self._get_world_bbox(obj2, view_type, **kwargs)
-        
-        # obj1的底部应该高于obj2的顶部
-        obj1_bottom = bbox1_min[2]
-        obj2_top = bbox2_max[2]
-        
-        return obj1_bottom > obj2_top + z_threshold
-    
-    def is_below(self, obj1: ThreeDInstance, obj2: ThreeDInstance,
-                 view_type: str = 'agentview',
-                 z_threshold: float = 0.05,
-                 **kwargs) -> bool:
-        """
-        判断obj1是否在obj2下方（below关系，不要求接触）。
-        
-        参数:
-            obj1: 下方的物体
-            obj2: 上方的物体
-            view_type: 使用的视图类型
-            z_threshold: Z轴最小距离阈值（米）
-            **kwargs: 传递给project_to_world_coordinates的其他参数
-        
-        返回:
-            True如果obj1在obj2下方
-        """
-        return self.is_above(obj2, obj1, view_type, z_threshold, **kwargs)
-    
-    def is_beside(self, obj1: ThreeDInstance, obj2: ThreeDInstance,
-                  view_type: str = 'agentview',
-                  distance_threshold: float = 0.1,
-                  z_overlap_ratio: float = 0.5,
-                  **kwargs) -> bool:
-        """
-        判断obj1是否在obj2旁边（beside关系）。
+        判断obj1是否在obj2的左侧（left关系）。
         
         条件：
-        1. obj1和obj2在Z轴方向有重叠
-        2. obj1和obj2在XY平面的距离在阈值内
+        1. obj1的Y坐标（中心或最大Y值）小于obj2的Y坐标（中心或最小Y值）
+        2. obj1和obj2在Z轴方向有重叠
+        3. obj1和obj2在X轴方向的距离在合理范围内（可选）
         
         参数:
-            obj1: 物体1
-            obj2: 物体2
-            view_type: 使用的视图类型
-            distance_threshold: XY平面最大距离阈值（米）
-            z_overlap_ratio: Z轴重叠比例阈值
-            **kwargs: 传递给project_to_world_coordinates的其他参数
+            obj1: 左侧的物体
+            obj2: 右侧的物体
+            z_overlap_ratio: Z轴重叠比例阈值，默认0.5
+            x_distance_threshold: X轴方向最大距离阈值（米），默认0.2
+            **kwargs: 传递给_get_world_bbox的其他参数
         
         返回:
-            True如果obj1在obj2旁边
+            True如果obj1在obj2左侧（Y轴负方向）
         """
-        bbox1_min, bbox1_max = self._get_world_bbox(obj1, view_type, **kwargs)
-        bbox2_min, bbox2_max = self._get_world_bbox(obj2, view_type, **kwargs)
+        bbox1_min, bbox1_max = self._get_world_bbox(obj1, **kwargs)
+        bbox2_min, bbox2_max = self._get_world_bbox(obj2, **kwargs)
         
         # 检查Z轴重叠
         z_overlap = max(0, min(bbox1_max[2], bbox2_max[2]) - max(bbox1_min[2], bbox2_min[2]))
@@ -326,18 +259,127 @@ class SceneGraphAnalyzer:
         z_range2 = bbox2_max[2] - bbox2_min[2]
         z_overlap_ratio_actual = z_overlap / max(z_range1, z_range2) if max(z_range1, z_range2) > 0 else 0
         
-        if z_overlap_ratio_actual < z_overlap_ratio:
+        if z_overlap_ratio_actual < overlap_ratio:
             return False
         
-        # 计算XY平面的中心点距离
-        center1 = (bbox1_min[:2] + bbox1_max[:2]) / 2
-        center2 = (bbox2_min[:2] + bbox2_max[:2]) / 2
-        distance = np.linalg.norm(center1 - center2)
+        # 检查Y轴关系：obj1应该在obj2的左侧（Y轴负方向）
+        # 使用中心点或边界来判断
+        center1_y = (bbox1_min[1] + bbox1_max[1]) / 2
+        center2_y = (bbox2_min[1] + bbox2_max[1]) / 2
         
-        return distance <= distance_threshold
+        if center1_y >= center2_y:
+            return False
+       
+        x_overlap = max(0, min(bbox1_max[0], bbox2_max[0]) - max(bbox1_min[0], bbox2_min[0]))
+        x_range1 = bbox1_max[0] - bbox1_min[0]
+        x_range2 = bbox2_max[0] - bbox2_min[0]
+        x_overlap_ratio_actual = x_overlap / max(x_range1, x_range2) if max(x_range1, x_range2) > 0 else 0
+        
+        if x_overlap_ratio_actual < overlap_ratio:
+            return False        
+
+
+        else:
+            return True
     
-    def get_spatial_relations(self, obj1: ThreeDInstance, obj2: ThreeDInstance,
-                              view_type: str = 'agentview',
+    def is_right(self, obj1: MergedThreeDInstance, obj2: MergedThreeDInstance,
+                 overlap_ratio: float = 0.5,
+                 **kwargs) -> bool:
+        """
+        判断obj1是否在obj2的右侧（right关系）。
+        
+        条件：
+        1. obj1的Y坐标（中心或最小Y值）大于obj2的Y坐标（中心或最大Y值）
+        2. obj1和obj2在Z轴方向有重叠
+        3. obj1和obj2在X轴方向的距离在合理范围内（可选）
+        
+        参数:
+            obj1: 右侧的物体
+            obj2: 左侧的物体
+            overlap_ratio: X轴重叠比例阈值，默认0.5
+            **kwargs: 传递给_get_world_bbox的其他参数
+        
+        返回:
+            True如果obj1在obj2右侧（Y轴正方向）
+        """
+        # right关系就是left关系的反向
+        return self.is_left(obj2, obj1, overlap_ratio, **kwargs)
+    
+    def is_behind(self, obj1: MergedThreeDInstance, obj2: MergedThreeDInstance,
+                  overlap_ratio: float = 0.5,
+                  **kwargs) -> bool:
+        """
+        判断obj1是否在obj2的后面（behind关系）。
+        
+        条件：
+        1. obj1的X坐标（中心）小于obj2的X坐标（中心）
+        2. obj1和obj2在Z轴方向有重叠
+        3. obj1和obj2在Y轴方向的距离在合理范围内（可选）
+        
+        参数:
+            obj1: 后面的物体
+            obj2: 前面的物体
+            overlap_ratio: X轴重叠比例阈值，默认0.5
+            **kwargs: 传递给_get_world_bbox的其他参数
+        
+        返回:
+            True如果obj1在obj2后面（X轴负方向）
+        """
+        bbox1_min, bbox1_max = self._get_world_bbox(obj1, **kwargs)
+        bbox2_min, bbox2_max = self._get_world_bbox(obj2, **kwargs)
+        
+        # 检查Z轴重叠
+        z_overlap = max(0, min(bbox1_max[2], bbox2_max[2]) - max(bbox1_min[2], bbox2_min[2]))
+        z_range1 = bbox1_max[2] - bbox1_min[2]
+        z_range2 = bbox2_max[2] - bbox2_min[2]
+        z_overlap_ratio_actual = z_overlap / max(z_range1, z_range2) if max(z_range1, z_range2) > 0 else 0
+        
+        if z_overlap_ratio_actual < overlap_ratio:
+            return False
+        
+        # 检查X轴关系：obj1应该在obj2的后面（X轴负方向）
+        center1_x = (bbox1_min[0] + bbox1_max[0]) / 2
+        center2_x = (bbox2_min[0] + bbox2_max[0]) / 2
+        
+        if center1_x >= center2_x:
+            return False
+        
+        # 可选：检查Y轴距离是否在合理范围内
+        y_overlap = max(0, min(bbox1_max[1], bbox2_max[1]) - max(bbox1_min[1], bbox2_min[1]))
+        y_range1 = bbox1_max[1] - bbox1_min[1]
+        y_range2 = bbox2_max[1] - bbox2_min[1]
+        y_overlap_ratio_actual = y_overlap / max(y_range1, y_range2) if max(y_range1, y_range2) > 0 else 0
+        
+        if y_overlap_ratio_actual < overlap_ratio:
+            return False
+        else:
+            return True
+
+    def is_in_front_of(self, obj1: MergedThreeDInstance, obj2: MergedThreeDInstance,
+                       overlap_ratio: float = 0.5,
+                       **kwargs) -> bool:
+        """
+        判断obj1是否在obj2的前面（in_front_of关系）。
+        
+        条件：
+        1. obj1的X坐标（中心）大于obj2的X坐标（中心）
+        2. obj1和obj2在Z轴方向有重叠
+        3. obj1和obj2在Y轴方向的距离在合理范围内（可选）
+        
+        参数:
+            obj1: 前面的物体
+            obj2: 后面的物体
+            overlap_ratio: X轴重叠比例阈值，默认0.5
+            **kwargs: 传递给_get_world_bbox的其他参数
+        
+        返回:
+            True如果obj1在obj2前面（X轴正方向）
+        """
+        return self.is_behind(obj2, obj1, overlap_ratio, **kwargs)
+
+
+    
+    def get_spatial_relations(self, obj1: MergedThreeDInstance, obj2: MergedThreeDInstance,
                               **kwargs) -> Dict[str, bool]:
         """
         获取obj1和obj2之间的所有空间关系。
@@ -352,23 +394,21 @@ class SceneGraphAnalyzer:
             包含各种关系判断结果的字典
         """
         relations = {
-            'on': self.is_on(obj1, obj2, view_type, **kwargs),
-            'in': self.is_in(obj1, obj2, view_type, **kwargs),
-            'under': self.is_under(obj1, obj2, view_type, **kwargs),
-            'above': self.is_above(obj1, obj2, view_type, **kwargs),
-            'below': self.is_below(obj1, obj2, view_type, **kwargs),
-            'beside': self.is_beside(obj1, obj2, view_type, **kwargs),
+            'on': self.is_on(obj1, obj2, **kwargs),
+            'in': self.is_in(obj1, obj2, **kwargs),
+            # 'under': self.is_under(obj1, obj2, **kwargs),
+            'left': self.is_left(obj1, obj2, **kwargs),
+            'right': self.is_right(obj1, obj2, **kwargs),
+            'behind': self.is_behind(obj1, obj2, **kwargs),
+            'in_front_of': self.is_in_front_of(obj1, obj2, **kwargs),
         }
         return relations
     
-    def build_scene_graph(self, view_type: str = 'agentview',
-                         **kwargs) -> Dict[Tuple[int, int], Dict[str, bool]]:
+    def build_scene_graph(self) -> Dict[Tuple[int, int], Dict[str, bool]]:
         """
         构建场景图，包含所有实例对之间的空间关系。
         
         参数:
-            view_type: 使用的视图类型
-            **kwargs: 传递给关系判断方法的其他参数
         
         返回:
             字典，键为(obj1_id, obj2_id)元组，值为关系字典
@@ -378,14 +418,13 @@ class SceneGraphAnalyzer:
         for i, obj1 in enumerate(self.instances):
             for j, obj2 in enumerate(self.instances):
                 if i != j:  # 不比较自己
-                    relations = self.get_spatial_relations(obj1, obj2, view_type, **kwargs)
-                    scene_graph[(obj1.object_id, obj2.object_id)] = relations
+                    relations = self.get_spatial_relations(obj1, obj2)
+                    scene_graph[(obj1.instance, obj2.instance)] = relations
         
         return scene_graph
     
-    def get_relations_for_object(self, obj: ThreeDInstance,
-                                view_type: str = 'agentview',
-                                **kwargs) -> Dict[int, Dict[str, bool]]:
+    def get_relations_for_object(self, obj: MergedThreeDInstance,
+                                ) -> Dict[int, Dict[str, bool]]:
         """
         获取指定物体与其他所有物体的空间关系。
         
@@ -401,48 +440,57 @@ class SceneGraphAnalyzer:
         
         for other_obj in self.instances:
             if other_obj.object_id != obj.object_id:
-                relations = self.get_spatial_relations(obj, other_obj, view_type, **kwargs)
+                relations = self.get_spatial_relations(obj, other_obj)
                 relations_dict[other_obj.object_id] = relations
         
         return relations_dict
     
-    def print_scene_graph(self, view_type: str = 'agentview', **kwargs):
+    def print_scene_graph(self):
         """
-        打印场景图（人类可读格式）。
+        打印场景图（JSON格式）。
         
         参数:
-            view_type: 使用的视图类型
-            **kwargs: 传递给关系判断方法的其他参数
         """
-        scene_graph = self.build_scene_graph(view_type, **kwargs)
+        scene_graph = self.build_scene_graph()
         
-        print(f"\n场景图（视图类型: {view_type}）:")
-        print("=" * 60)
+        # 收集所有出现过的对象ID
+        object_ids = set()
+        relations_list = []
         
         for (obj1_id, obj2_id), relations in scene_graph.items():
-            # 只打印为True的关系
-            true_relations = [rel for rel, value in relations.items() if value]
-            if true_relations:
-                print(f"物体 {obj1_id} -> 物体 {obj2_id}: {', '.join(true_relations)}")
+            # 只处理为True的关系
+            for rel_type, is_true in relations.items():
+                if is_true:
+                    object_ids.add(obj1_id)
+                    object_ids.add(obj2_id)
+                    relations_list.append({
+                        "type": rel_type,
+                        "subject": obj1_id,
+                        "object": obj2_id
+                    })
         
-        print("=" * 60)
+        # 构建JSON结构
+        result = {
+            "objects": [{"id": obj_id} for obj_id in sorted(object_ids)],
+            "relations": relations_list
+        }
+        
+        # 打印JSON格式
+        print(json.dumps(result, indent=2, ensure_ascii=False))
     
-    def visualize_scene_matplotlib(self, view_type: str = 'agentview',
+    def visualize_scene_matplotlib(self,
                                    show_bbox: bool = True,
                                    show_relations: bool = True,
                                    show_points: bool = True,
-                                   point_size: float = 1.0,
-                                   **kwargs):
+                                   point_size: float = 1.0):
         """
         使用matplotlib可视化场景（所有实例的点云、包围盒和空间关系）。
         
         参数:
-            view_type: 使用的视图类型
             show_bbox: 是否显示包围盒，默认True
             show_relations: 是否显示空间关系（箭头），默认True
             show_points: 是否显示点云，默认True
             point_size: 点云大小，默认1.0
-            **kwargs: 传递给project_to_world_coordinates的其他参数
         """
         if not MATPLOTLIB_AVAILABLE:
             print("错误: matplotlib未安装，无法进行可视化")
@@ -452,7 +500,7 @@ class SceneGraphAnalyzer:
         ax = fig.add_subplot(111, projection='3d')
         
         # 获取场景图
-        scene_graph = self.build_scene_graph(view_type, **kwargs)
+        scene_graph = self.build_scene_graph()
         
         # 为每个实例分配颜色
         colors = plt.cm.tab20(np.linspace(0, 1, len(self.instances)))
@@ -463,12 +511,12 @@ class SceneGraphAnalyzer:
         
         # 收集所有点云和包围盒
         for instance in self.instances:
-            points = self._get_world_points(instance, view_type, **kwargs)
+            points = self._get_world_points(instance)
             if len(points) > 0:
                 all_points.append((instance.object_id, points))
             
             if show_bbox:
-                bbox_min, bbox_max = self._get_world_bbox(instance, view_type, **kwargs)
+                bbox_min, bbox_max = self._get_world_bbox(instance)
                 all_bboxes.append((instance.object_id, bbox_min, bbox_max))
         
         # 绘制点云
@@ -494,8 +542,8 @@ class SceneGraphAnalyzer:
                     obj2 = next((obj for obj in self.instances if obj.object_id == obj2_id), None)
                     
                     if obj1 and obj2:
-                        bbox1_min, bbox1_max = self._get_world_bbox(obj1, view_type, **kwargs)
-                        bbox2_min, bbox2_max = self._get_world_bbox(obj2, view_type, **kwargs)
+                        bbox1_min, bbox1_max = self._get_world_bbox(obj1)
+                        bbox2_min, bbox2_max = self._get_world_bbox(obj2)
                         
                         # 计算中心点
                         center1 = (bbox1_min + bbox1_max) / 2
@@ -509,7 +557,7 @@ class SceneGraphAnalyzer:
         ax.set_xlabel('X (m)')
         ax.set_ylabel('Y (m)')
         ax.set_zlabel('Z (m)')
-        ax.set_title(f'场景图可视化 (视图类型: {view_type})')
+        ax.set_title('场景图可视化')
         
         if show_points and len(all_points) > 0:
             ax.legend(bbox_to_anchor=(1.05, 1), loc='upper left')
@@ -517,20 +565,17 @@ class SceneGraphAnalyzer:
         plt.tight_layout()
         plt.show()
     
-    def visualize_scene_open3d(self, view_type: str = 'agentview',
+    def visualize_scene_open3d(self,
                               show_bbox: bool = True,
                               show_relations: bool = True,
-                              show_points: bool = True,
-                              **kwargs):
+                              show_points: bool = True):
         """
         使用open3d可视化场景（所有实例的点云、包围盒和空间关系）。
         
         参数:
-            view_type: 使用的视图类型
             show_bbox: 是否显示包围盒，默认True
             show_relations: 是否显示空间关系（线条），默认True
             show_points: 是否显示点云，默认True
-            **kwargs: 传递给project_to_world_coordinates的其他参数
         """
         if not OPEN3D_AVAILABLE:
             print("错误: open3d未安装，无法进行可视化")
@@ -538,11 +583,11 @@ class SceneGraphAnalyzer:
         
         # 创建可视化器
         vis = o3d.visualization.Visualizer()
-        vis.create_window(window_name=f"场景图可视化 (视图类型: {view_type})", 
+        vis.create_window(window_name="场景图可视化",
                          width=1200, height=800)
         
         # 获取场景图
-        scene_graph = self.build_scene_graph(view_type, **kwargs)
+        scene_graph = self.build_scene_graph()
         
         # 为每个实例分配颜色
         colors = np.linspace(0, 1, len(self.instances))
@@ -552,7 +597,7 @@ class SceneGraphAnalyzer:
         
         # 收集所有点云和包围盒
         for instance in self.instances:
-            points = self._get_world_points(instance, view_type, **kwargs)
+            points = self._get_world_points(instance)
             if len(points) == 0:
                 continue
             
@@ -570,7 +615,7 @@ class SceneGraphAnalyzer:
             
             # 绘制包围盒
             if show_bbox:
-                bbox_min, bbox_max = self._get_world_bbox(instance, view_type, **kwargs)
+                bbox_min, bbox_max = self._get_world_bbox(instance)
                 bbox = self._create_bbox_open3d(bbox_min, bbox_max, color)
                 vis.add_geometry(bbox)
                 geometries.append(bbox)
@@ -584,8 +629,8 @@ class SceneGraphAnalyzer:
                     obj2 = next((obj for obj in self.instances if obj.object_id == obj2_id), None)
                     
                     if obj1 and obj2:
-                        bbox1_min, bbox1_max = self._get_world_bbox(obj1, view_type, **kwargs)
-                        bbox2_min, bbox2_max = self._get_world_bbox(obj2, view_type, **kwargs)
+                        bbox1_min, bbox1_max = self._get_world_bbox(obj1)
+                        bbox2_min, bbox2_max = self._get_world_bbox(obj2)
                         
                         center1 = (bbox1_min + bbox1_max) / 2
                         center2 = (bbox2_min + bbox2_max) / 2
@@ -606,32 +651,17 @@ class SceneGraphAnalyzer:
         vis.run()
         vis.destroy_window()
     
-    def visualize_scene(self, view_type: str = 'agentview',
-                       use_open3d: bool = False,
-                       show_bbox: bool = True,
-                       show_relations: bool = True,
-                       show_points: bool = True,
-                       **kwargs):
+    def visualize_scene(self):
         """
         可视化场景（统一接口）。
         
         参数:
-            view_type: 使用的视图类型
-            use_open3d: 如果为True，使用open3d（交互式更好）；否则使用matplotlib
-            show_bbox: 是否显示包围盒，默认True
-            show_relations: 是否显示空间关系，默认True
-            show_points: 是否显示点云，默认True
-            **kwargs: 传递给project_to_world_coordinates的其他参数
         """
-        if use_open3d:
-            self.visualize_scene_open3d(view_type, show_bbox, show_relations, 
-                                       show_points, **kwargs)
-        else:
-            self.visualize_scene_matplotlib(view_type, show_bbox, show_relations, 
-                                          show_points, **kwargs)
+        self.visualize_scene_open3d()
+        self.visualize_scene_matplotlib()
     
-    def _draw_bbox_matplotlib(self, ax, bbox_min: np.ndarray, bbox_max: np.ndarray,
-                             color, alpha: float = 0.3):
+    def _draw_bbox_matplotlib(self, ax: Axes3D, bbox_min: np.ndarray, bbox_max: np.ndarray,
+                             color: Tuple[float, float, float], alpha: float = 0.3):
         """在matplotlib中绘制3D包围盒"""
         x_min, y_min, z_min = bbox_min
         x_max, y_max, z_max = bbox_max
@@ -656,7 +686,7 @@ class SceneGraphAnalyzer:
             points = vertices[edge]
             ax.plot3D(*points.T, color=color, alpha=alpha, linewidth=1.5)
     
-    def _draw_arrow_matplotlib(self, ax, start: np.ndarray, end: np.ndarray, label: str = ""):
+    def _draw_arrow_matplotlib(self, ax: Axes3D, start: np.ndarray, end: np.ndarray, label: str = ""):
         """在matplotlib中绘制3D箭头"""
         # 绘制箭头线
         ax.plot3D([start[0], end[0]], [start[1], end[1]], [start[2], end[2]],
@@ -673,7 +703,7 @@ class SceneGraphAnalyzer:
         x_max, y_max, z_max = bbox_max
         
         # 定义8个顶点
-        points = np.array([
+        vertices = np.array([
             [x_min, y_min, z_min], [x_max, y_min, z_min],
             [x_max, y_max, z_min], [x_min, y_max, z_min],
             [x_min, y_min, z_max], [x_max, y_min, z_max],
@@ -688,7 +718,7 @@ class SceneGraphAnalyzer:
         ]
         
         line_set = o3d.geometry.LineSet()
-        line_set.points = o3d.utility.Vector3dVector(points)
+        line_set.points = o3d.utility.Vector3dVector(vertices)
         line_set.lines = o3d.utility.Vector2iVector(lines)
         line_set.paint_uniform_color(color)
         

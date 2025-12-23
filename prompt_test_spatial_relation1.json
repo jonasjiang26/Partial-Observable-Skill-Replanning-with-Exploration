@@ -1,0 +1,52 @@
+{
+    "objects": [
+      {
+        "id": "macaroni_and_cheese_1_main"
+      },
+      {
+        "id": "short_fridge_1_base"
+      },
+      {
+        "id": "table"
+      },
+      {
+        "id": "wine_bottle_1_main"
+      },
+      {
+        "id": "wine_bottle_2_main"
+      }
+    ],
+    "relations": [
+      {
+        "type": "on",
+        "subject": "wine_bottle_1_main",
+        "object": "table"
+      },
+      {
+        "type": "in_front_of",
+        "subject": "wine_bottle_1_main",
+        "object": "wine_bottle_2_main"
+      },
+      {
+        "type": "on",
+        "subject": "wine_bottle_2_main",
+        "object": "table"
+      },
+      {
+        "type": "behind",
+        "subject": "wine_bottle_2_main",
+        "object": "wine_bottle_1_main"
+      },
+      {
+        "type": "on",
+        "subject": "macaroni_and_cheese_1_main",
+        "object": "table"
+      },
+      {
+        "type": "on",
+        "subject": "short_fridge_1_base",
+        "object": "table"
+      }
+    ]
+  }
+  

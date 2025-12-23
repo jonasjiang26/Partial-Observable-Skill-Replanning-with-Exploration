@@ -1,0 +1,93 @@
+(define (problem LIBERO_Kitchen_Tabletop_Manipulation)
+  (:domain robosuite)
+  (:language put all the items in the cabinet)
+    (:regions
+      (wooden_cabinet_init_region
+          (:target kitchen_table)
+          (:ranges (
+              (-0.005 0.295 0.005 0.305)
+            )
+          )
+          (:yaw_rotation (
+              (-0.39269908169872414 -0.39269908169872414)
+            )
+          )
+      )
+      (black_book_1_init_region
+          (:target kitchen_table)
+          (:ranges (
+              (-0.001 -0.101 0.001 -0.099)
+            )
+          )
+          (:yaw_rotation (
+              (0.0 0.0)
+            )
+          )
+      )
+      (butter_1_init_region
+          (:target kitchen_table)
+          (:ranges (
+              (0.099 -0.201 0.101 -0.199)
+            )
+          )
+          (:yaw_rotation (
+              (0.0 6.283185307179586)
+            )
+          )
+      )
+      (yellow_book_1_init_region
+          (:target kitchen_table)
+          (:ranges (
+              (-0.101 -0.251 -0.099 -0.249)
+            )
+          )
+          (:yaw_rotation (
+              (0.0 0.0)
+            )
+          )
+      )
+      (top_side
+          (:target wooden_cabinet_1)
+      )
+      (top_region
+          (:target wooden_cabinet_1)
+      )
+      (middle_region
+          (:target wooden_cabinet_1)
+      )
+      (bottom_region
+          (:target wooden_cabinet_1)
+      )
+    )
+
+  (:fixtures
+    kitchen_table - kitchen_table
+    wooden_cabinet_1 - wooden_cabinet
+  )
+
+  (:objects
+    butter_1 - butter
+    black_book_1 - black_book
+    yellow_book_1 - yellow_book
+    glazed_rim_porcelain_ramekin_1 - glazed_rim_porcelain_ramekin
+  )
+
+  (:obj_of_interest
+    wooden_cabinet_1
+    black_book_1
+    yellow_book_1
+  )
+
+  (:init
+    (On wooden_cabinet_1 kitchen_table_wooden_cabinet_init_region)
+    (On butter_1 kitchen_table_butter_1_init_region)
+    (On black_book_1 kitchen_table_black_book_1_init_region)
+    (On yellow_book_1 kitchen_table_yellow_book_1_init_region)
+    (In glazed_rim_porcelain_ramekin_1 wooden_cabinet_1_bottom_region)
+  )
+
+  (:goal
+    (And (In black_book_1 wooden_cabinet_1_top_region) (In yellow_book_1 wooden_cabinet_1_bottom_region))
+  )
+
+)

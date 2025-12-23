@@ -8,8 +8,9 @@ Content:
 """
 
 import os
+import sys
 from datetime import datetime
-
+import argparse
 import cv2
 import numpy as np
 import open3d as o3d
@@ -17,10 +18,15 @@ import robosuite.utils.transform_utils as T
 from PIL import Image
 import h5py
 import json
-
-import init_path  # 保证能 import libero
 import libero.libero.utils.utils as libero_utils
 from libero.libero.envs import TASK_MAPPING
+
+# 确保可以从项目根目录导入 utils 包（无论当前工作目录在项目根还是 script/）
+PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if PROJECT_ROOT not in sys.path:
+    sys.path.insert(0, PROJECT_ROOT)
+
+from utils.scene_graph_utils import SceneGraphAnalyzer, MergedThreeDInstance
 
 # 设置环境变量以避免OpenGL/EGL警告
 os.environ['MUJOCO_GL'] = 'egl'
@@ -221,11 +227,183 @@ def extract_object_pointcloud(
     _, unique_indices = np.unique(voxel_indices, axis=0, return_index=True)
     return merged[unique_indices]
 
+
+# ---------------------------- Visualization utilities ---------------------------- #
+class PointCloudVisualizer:
+    """
+    点云可视化工具：
+    - 优先使用 Plotly 做交互式 3D 可视化
+    - 如果 Plotly 不可用，则退回到 Matplotlib
+    - 同时支持保存为 HTML / PNG / PLY 文件
+    """
+
+    @staticmethod
+    def visualize(merged_pointcloud: np.ndarray,
+                  title: str = "Point Cloud Visualization",
+                  html_path: str = "pointcloud.html",
+                  png_path: str = "pointcloud.png",
+                  ply_path: str = "pointcloud.ply",
+                  show: bool = True) -> None:
+        """
+        综合可视化入口：先尝试 Plotly，失败则使用 Matplotlib，并且保存为 PLY。
+        """
+        if merged_pointcloud.size == 0:
+            print("点云为空，无法可视化")
+            return
+
+        # 1) 先尝试 Plotly
+        used_plotly = PointCloudVisualizer._try_visualize_with_plotly(
+            merged_pointcloud, title=title, html_path=html_path, show=show
+        )
+
+        # 2) 如果 Plotly 不可用，则使用 Matplotlib
+        if not used_plotly:
+            PointCloudVisualizer._visualize_with_matplotlib(
+                merged_pointcloud, title=title, png_path=png_path, show=show
+            )
+
+        # 3) 无论使用哪种可视化方式，都保存为 PLY
+        PointCloudVisualizer.save_as_ply(merged_pointcloud, ply_path=ply_path)
+
+    @staticmethod
+    def _try_visualize_with_plotly(merged_pointcloud: np.ndarray,
+                                   title: str,
+                                   html_path: str,
+                                   show: bool) -> bool:
+        """
+        使用 Plotly 进行交互式 3D 点云可视化。
+        返回值:
+            True  如果 Plotly 可用并成功绘制
+            False 如果 Plotly 未安装或导入失败
+        """
+        try:
+            import plotly.graph_objects as go
+
+            fig = go.Figure(
+                data=[
+                    go.Scatter3d(
+                        x=merged_pointcloud[:, 0],
+                        y=merged_pointcloud[:, 1],
+                        z=merged_pointcloud[:, 2],
+                        mode="markers",
+                        marker=dict(
+                            size=3,
+                            color=merged_pointcloud[:, 2],  # 用 z 坐标作为颜色
+                            colorscale="Viridis",
+                            opacity=0.8,
+                            showscale=True,
+                            colorbar=dict(title="Z坐标"),
+                        ),
+                        name="Point Cloud",
+                    )
+                ]
+            )
+
+            fig.update_layout(
+                title=title,
+                scene=dict(
+                    xaxis_title="X",
+                    yaxis_title="Y",
+                    zaxis_title="Z",
+                    aspectmode="data",  # 保持坐标轴比例
+                ),
+                width=1000,
+                height=800,
+            )
+
+            # 保存为 HTML 文件（可以在浏览器中打开）
+            fig.write_html(html_path)
+            print(f"交互式可视化已保存为 {html_path}")
+            print("可以在浏览器中打开此文件进行交互式查看（旋转、缩放、平移）")
+
+            if show:
+                try:
+                    fig.show()
+                except Exception:
+                    print("无法显示窗口，但 HTML 文件已保存")
+
+            return True
+
+        except ImportError:
+            print("Plotly 未安装，使用 Matplotlib 作为备选方案...")
+            return False
+
+    @staticmethod
+    def _visualize_with_matplotlib(merged_pointcloud: np.ndarray,
+                                   title: str,
+                                   png_path: str,
+                                   show: bool) -> None:
+        """使用 Matplotlib 进行静态 3D 点云可视化并保存 PNG。"""
+        import matplotlib.pyplot as plt
+
+        fig = plt.figure(figsize=(10, 8))
+        ax = fig.add_subplot(111, projection="3d")
+
+        # 使用 z 坐标作为颜色
+        scatter = ax.scatter(
+            merged_pointcloud[:, 0],
+            merged_pointcloud[:, 1],
+            merged_pointcloud[:, 2],
+            c=merged_pointcloud[:, 2],
+            cmap="viridis",
+            s=10,
+            alpha=0.6,
+        )
+
+        ax.set_xlabel("X")
+        ax.set_ylabel("Y")
+        ax.set_zlabel("Z")
+        ax.set_title(title)
+        plt.colorbar(scatter, ax=ax, label="Z坐标")
+
+        # 保存图片
+        plt.savefig(png_path, dpi=150, bbox_inches="tight")
+        print(f"可视化图片已保存为 {png_path}")
+
+        if show:
+            try:
+                plt.show()
+            except Exception:
+                print("无法显示窗口，但图片已保存")
+
+    @staticmethod
+    def save_as_ply(merged_pointcloud: np.ndarray, ply_path: str) -> None:
+        """将点云保存为 PLY 文件，方便在 CloudCompare、MeshLab 等工具中查看。"""
+        pcd = o3d.geometry.PointCloud()
+        pcd.points = o3d.utility.Vector3dVector(merged_pointcloud.astype(np.float64))
+        pcd.paint_uniform_color([1.0, 0.0, 0.0])
+        o3d.io.write_point_cloud(ply_path, pcd)
+        print(f"点云文件已保存为 {ply_path}（可用 CloudCompare、MeshLab 等工具打开）")
+
 if __name__ == "__main__":
 
+    parser = argparse.ArgumentParser(description='从LIBERO中合成点云')
+    parser.add_argument(
+        '--load_path',
+        type=str,
+        default="/home/jing/LIBERO/LIBERO/libero/datasets/KITCHEN_SCENE1_put_all_the_dairy_product_in_the_fridge_demo.hdf5",
+        required=False,
+        help='h5文件路径'
+    )
+    parser.add_argument('--frame_id', type=int, required=True, help='帧ID')
+    parser.add_argument(
+        '--object_name',
+        type=str,
+        required=True,
+        help='物体名称，可以用逗号分隔多个物体，例如 "butter_1_main,black_book_1_main"'
+    )
 
-# 1. 读 demo.hdf5
-    demo_file = "/home/jing/LIBERO/LIBERO/libero/datasets/KITCHEN_SCENE1_put_all_the_items_in_the_cabinet_demo.hdf5"
+    args = parser.parse_args()
+
+    # 解析物体名称（支持逗号分隔多个）
+    object_names = [name.strip() for name in args.object_name.split(",") if name.strip()]
+    if len(object_names) == 0:
+        print("错误: 至少需要提供 1 个物体名称（可以用逗号分隔多个物体）")
+        exit(1)
+
+    load_path = args.load_path
+    frame_id = args.frame_id
+    demo_file = load_path
     f = h5py.File(demo_file, "r")
     env_args = json.loads(f["data"].attrs["env_args"])
     env_kwargs = env_args["env_kwargs"]
@@ -240,16 +418,15 @@ if __name__ == "__main__":
     f.close()
     model_xml = libero_utils.postprocess_model_xml(model_xml, {})
 
-
     # 2. 补充相机等参数（和 create_dataset.py 基本一致，可以按需改）
     libero_utils.update_env_kwargs(
         env_kwargs,
         bddl_file_name=bddl_file_name,
-        has_renderer=False,  # 不使用窗口渲染器
-        has_offscreen_renderer=True,  # 使用离屏渲染器
+        has_renderer=False,          # 不使用窗口渲染器
+        has_offscreen_renderer=True, # 使用离屏渲染器
         ignore_done=True,
         use_camera_obs=True,
-        camera_depths=True,   # 要深度图就 True
+        camera_depths=True,          # 要深度图就 True
         camera_names=[
             "robot0_eye_in_hand",
             "agentview",
@@ -273,110 +450,48 @@ if __name__ == "__main__":
     obs = env.reset()
 
     env.reset_from_xml_string(model_xml)
-    env.sim.set_state_from_flattened(states[5760])
+    env.sim.set_state_from_flattened(states[frame_id])
     env.sim.forward()
     model_xml = env.sim.model.get_xml()
 
-    # 4. reset 一下，就可以 step / render / 取 obs 了
+    print("env 创建成功，obs keys:", obs.keys())
 
-print("env 创建成功，obs keys:", obs.keys())
-composed_pointcloud = extract_object_pointcloud(env, "glazed_rim_porcelain_ramekin_1_main")#glazed_rim_porcelain_ramekin_1_main
-print("点云提取成功，点云 shape:", composed_pointcloud.shape)
+    # 4. 为指定物体提取点云并可视化
+    merged_pointclouds = []
+    instances = []
+    for obj_name in object_names:
+        pc = extract_object_pointcloud(env, obj_name)
+        print(f"点云提取成功 [{obj_name}]，点云 shape:", pc.shape)
+        instance = MergedThreeDInstance(obj_name, pc)
+        instances.append(instance)
+        if pc.size > 0:
+            merged_pointclouds.append(pc)
 
-# ---------------- 使用 Plotly 进行交互式 3D 可视化 ----------------
-if composed_pointcloud.shape[0] == 0:
-    print("点云为空，无法可视化")
-else:
+    scene_graph_analyzer = SceneGraphAnalyzer(instances)
+    scene_graph_analyzer.print_scene_graph()
+
+    if len(merged_pointclouds) == 0:
+        print("所有物体的点云均为空，无法可视化")
+    else:
+        merged_pointcloud = np.concatenate(merged_pointclouds, axis=0)
+
+        title = f"Point Cloud Visualization - {','.join(object_names)}"
+        html_path = "black_book_1_main_pointcloud.html"
+        png_path = "black_book_1_main_pointcloud.png"
+        ply_path = "black_book_1_main.ply"
+
+        # 统一使用上面定义好的可视化工具（内部自动优先 Plotly，失败回退 Matplotlib）
+        PointCloudVisualizer.visualize(
+            merged_pointcloud,
+            title=title,
+            html_path=html_path,
+            png_path=png_path,
+            ply_path=ply_path,
+            show=True,
+        )
+
+    # 正确关闭环境，避免 EGL 清理警告
     try:
-        import plotly.graph_objects as go
-        import plotly.express as px
-        
-        # 创建交互式 3D 散点图
-        fig = go.Figure(data=[go.Scatter3d(
-            x=composed_pointcloud[:, 0],
-            y=composed_pointcloud[:, 1],
-            z=composed_pointcloud[:, 2],
-            mode='markers',
-            marker=dict(
-                size=3,
-                color=composed_pointcloud[:, 2],  # 用 z 坐标作为颜色
-                colorscale='Viridis',
-                opacity=0.8,
-                showscale=True,
-                colorbar=dict(title="Z坐标")
-            ),
-            name='Point Cloud'
-        )])
-        
-        fig.update_layout(
-            title='Point Cloud Visualization - black_book_1_main',
-            scene=dict(
-                xaxis_title='X',
-                yaxis_title='Y',
-                zaxis_title='Z',
-                aspectmode='data'  # 保持坐标轴比例
-            ),
-            width=1000,
-            height=800
-        )
-        
-        # 保存为 HTML 文件（可以在浏览器中打开）
-        output_html = "black_book_1_main_pointcloud.html"
-        fig.write_html(output_html)
-        print(f"交互式可视化已保存为 {output_html}")
-        print(f"可以在浏览器中打开此文件进行交互式查看（旋转、缩放、平移）")
-        
-        # 如果环境支持，也可以尝试显示
-        try:
-            fig.show()
-        except:
-            print("无法显示窗口，但 HTML 文件已保存")
-            
-    except ImportError:
-        print("Plotly 未安装，使用 Matplotlib 作为备选方案...")
-        # 备选方案：使用 Matplotlib
-        import matplotlib.pyplot as plt
-        
-        fig = plt.figure(figsize=(10, 8))
-        ax = fig.add_subplot(111, projection='3d')
-        
-        # 使用 z 坐标作为颜色
-        scatter = ax.scatter(
-            composed_pointcloud[:, 0],
-            composed_pointcloud[:, 1],
-            composed_pointcloud[:, 2],
-            c=composed_pointcloud[:, 2],
-            cmap='viridis',
-            s=10,
-            alpha=0.6
-        )
-        
-        ax.set_xlabel('X')
-        ax.set_ylabel('Y')
-        ax.set_zlabel('Z')
-        ax.set_title('Point Cloud Visualization - black_book_1_main')
-        plt.colorbar(scatter, ax=ax, label='Z坐标')
-        
-        # 保存图片
-        output_png = "black_book_1_main_pointcloud.png"
-        plt.savefig(output_png, dpi=150, bbox_inches='tight')
-        print(f"可视化图片已保存为 {output_png}")
-        
-        try:
-            plt.show()
-        except:
-            print("无法显示窗口，但图片已保存")
-    
-    # 同时保存为 PLY 文件（供其他工具使用）
-    pcd = o3d.geometry.PointCloud()
-    pcd.points = o3d.utility.Vector3dVector(composed_pointcloud.astype(np.float64))
-    pcd.paint_uniform_color([1.0, 0.0, 0.0])
-    output_ply = "black_book_1_main.ply"
-    o3d.io.write_point_cloud(output_ply, pcd)
-    print(f"点云文件已保存为 {output_ply}（可用 CloudCompare、MeshLab 等工具打开）")
-
-# 正确关闭环境，避免 EGL 清理警告
-try:
-    env.close()
-except:
-    pass
+        env.close()
+    except Exception:
+        pass

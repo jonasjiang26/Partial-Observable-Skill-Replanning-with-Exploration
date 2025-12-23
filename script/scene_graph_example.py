@@ -16,8 +16,8 @@ def main():
     parser = argparse.ArgumentParser(description='分析场景中多个物体的空间关系')
     parser.add_argument('--load_path', type=str, required=True, help='h5文件路径')
     parser.add_argument('--frame_id', type=int, required=True, help='帧ID')
-    parser.add_argument('--object_ids', type=int, nargs='+', required=True, 
-                       help='要分析的物体ID列表（至少2个）')
+    parser.add_argument('--objects_name', type=int, nargs='+', required=True, 
+                       help='要分析的物体名称（至少2个）')
     parser.add_argument('--view_type', type=str, default='eye_in_hand',
                        choices=['agentview', 'eye_in_hand'],
                        help='使用的视图类型（默认agentview）')
@@ -33,8 +33,8 @@ def main():
                        help='可视化时显示点云（默认True）')
     args = parser.parse_args()
     
-    if len(args.object_ids) < 2:
-        print("错误: 至少需要2个物体ID")
+    if len(args.objects_name) < 2:
+        print("错误: 至少需要2个物体名称")
         return
     
     # 加载数据
@@ -45,7 +45,7 @@ def main():
     
     # 创建3D实例列表
     instances_3d = []
-    for obj_id in args.object_ids:
+    for obj_name in args.objects_name:
         obj_2d = viewer.get_object_by_id(obj_id)
         if obj_2d is None:
             print(f"警告: 未找到物体ID {obj_id}，跳过")

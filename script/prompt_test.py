@@ -2,7 +2,7 @@ from openai import OpenAI
 import base64
 import json
 
-client = OpenAI(api_key="")
+client = OpenAI()
 
 # 读取图片并转换为 base64
 def encode_image(image_path):

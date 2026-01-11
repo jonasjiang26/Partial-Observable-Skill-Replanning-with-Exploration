@@ -1,0 +1,45 @@
+{
+  "objects": [
+    {
+      "id": "chefmate_8_frypan_1_main"
+    },
+    {
+      "id": "flat_stove_1_burner"
+    },
+    {
+      "id": "macaroni_and_cheese_1_main"
+    },
+    {
+      "id": "table"
+    },
+    {
+      "id": "wooden_two_layer_shelf_1_main"
+    }
+  ],
+  "relations": [
+    {
+      "type": "on",
+      "subject": "chefmate_8_frypan_1_main",
+      "object": "flat_stove_1_burner"
+    },
+    {
+      "type": "on",
+      "subject": "flat_stove_1_burner",
+      "object": "table"
+    },
+    {
+      "type": "on",
+      "subject": "macaroni_and_cheese_1_main",
+      "object": "table"
+    },
+    {
+      "type": "on",
+      "subject": "wooden_two_layer_shelf_1_main",
+      "object": "table"
+    }
+  ]
+}
+
+
+
+  

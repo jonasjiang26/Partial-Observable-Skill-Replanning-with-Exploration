@@ -1,0 +1,57 @@
+{
+  "objects": [
+    {
+      "id": "micro_wave_1_main"
+    },
+    {
+      "id": "wooden_tray_1_main"
+    },
+    {
+      "id": "popcorn_1_main"
+    },
+    {
+      "id": "table"
+    },
+    {
+      "id": "akita_black_bowl_1_main"
+    },
+    {
+      "id": "tomato_sauce_can_1_main"
+    }
+    
+  ],
+  "relations": [
+    {
+      "type": "on",
+      "subject": "micro_wave_1_main",
+      "object": "table"
+    },
+    {
+      "type": "on",
+      "subject": "wooden_tray_1_main",
+      "object": "table"
+    },
+    {
+      "type": "in",
+      "subject": "popcorn_1_main",
+      "object": "wooden_tray_1_main"
+    },
+    {
+      "type": "on",
+      "subject": "akita_black_bowl_1_main",
+      "object": "table"
+    },
+    {
+      "type": "in",
+      "subject": "tomato_sauce_can_1_main",
+      "object": "micro_wave_"
+    },
+        
+    
+    
+  ]
+}
+
+
+
+  

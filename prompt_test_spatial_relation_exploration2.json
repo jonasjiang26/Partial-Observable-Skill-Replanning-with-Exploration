@@ -1,0 +1,43 @@
+{
+    "objects": [
+      {
+        "id": "wooden_cabinet_1_main"
+      },
+      {
+        "id": "table"
+      },
+      {
+        "id": "wooden_tray_1_main"
+      },
+      {
+        "id": "butter_1_main"
+      },
+      {
+        "id": "chocolate_pudding_1_main"
+      }    
+
+    ],
+    "relations": [
+      {
+        "type": "on",
+        "subject": "wooden_cabinet_1_main",
+        "object": "table"
+      },
+      {
+        "type": "on",
+        "subject": "wooden_tray_1_main",
+        "object": "table"
+      },
+      {
+        "type": "in",
+        "subject": "butter_1_main",
+        "object": "wooden_cabinet_top_drawer_1"
+      },
+      {
+        "type": "in",
+        "subject": "chocolate_pudding_1_main",
+        "object": "wooden_cabinet_middle_drawer_1"
+      }
+    ]
+  }
+  

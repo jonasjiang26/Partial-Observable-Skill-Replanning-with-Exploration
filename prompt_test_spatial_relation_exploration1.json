@@ -1,0 +1,28 @@
+{
+    "objects": [
+      {
+        "id": "wooden_cabinet_1_main"
+      },
+      {
+        "id": "table"
+      },
+      {
+        "id": "wooden_tray_1_main"
+      },
+
+    ],
+    "relations": [
+      {
+        "type": "on",
+        "subject": "wooden_cabinet_1_main",
+        "object": "table"
+      },
+      {
+        "type": "on",
+        "subject": "wooden_tray_1_main",
+        "object": "table"
+      },
+
+    ]
+  }
+  

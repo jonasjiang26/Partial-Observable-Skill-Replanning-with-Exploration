@@ -381,7 +381,7 @@ if __name__ == "__main__":
     parser.add_argument(
         '--load_path',
         type=str,
-        default="/home/jing/LIBERO/LIBERO/libero/datasets/KITCHEN_SCENE1_put_all_the_dairy_product_in_the_fridge_demo.hdf5",
+        default="/home/jing/LIBERO/LIBERO/libero/datasets/KITCHEN_SCENE1_i_want_to_cook_something_to_eat_demo.hdf5",
         required=False,
         help='h5文件路径'
     )

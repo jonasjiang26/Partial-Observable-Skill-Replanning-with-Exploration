@@ -1,0 +1,85 @@
+(define (problem LIBERO_Kitchen_Tabletop_Manipulation)
+  (:domain robosuite)
+  (:language Put the cooking ingredients in the pan.)
+    (:regions
+      (flat_stove_init_region
+          (:target kitchen_table)
+          (:ranges (
+              (-0.20500000000000002 0.295 -0.195 0.305)
+            )
+          )
+          (:yaw_rotation (
+              (0.0 0.0)
+            )
+          )
+      )
+      (wooden_two_layer_shelf_init_region
+          (:target kitchen_table)
+          (:ranges (
+              (-0.085 -0.305 -0.075 -0.295)
+            )
+          )
+          (:yaw_rotation (
+              (-1.5707963267948966 -1.5707963267948966)
+            )
+          )
+      )
+      (macaroni_and_cheese_init_region
+          (:target kitchen_table)
+          (:ranges (
+              (-0.3001 -0.2301 -0.2999 -0.22990000000000002)
+            )
+          )
+          (:yaw_rotation (
+              (0.0 0.0)
+            )
+          )
+      )
+      
+
+      (cook_region
+          (:target flat_stove_1)
+      )
+      (top_side
+          (:target wooden_two_layer_shelf_1)
+      )
+      (top_region
+          (:target wooden_two_layer_shelf_1)
+      )
+      (bottom_region
+          (:target wooden_two_layer_shelf_1)
+      )
+    )
+
+  (:fixtures
+    kitchen_table - kitchen_table
+    flat_stove_1 - flat_stove
+    wooden_two_layer_shelf_1 - wooden_two_layer_shelf
+  )
+
+  (:objects
+    chefmate_8_frypan_1 - chefmate_8_frypan
+    butter_1 - butter
+    macaroni_and_cheese_1 - macaroni_and_cheese
+  )
+
+  (:obj_of_interest
+    macaroni_and_cheese_1
+    butter_1
+    kitchen_table
+    chefmate_8_frypan_1
+  )
+
+  (:init
+    (On flat_stove_1 kitchen_table_flat_stove_init_region)
+    (On chefmate_8_frypan_1 flat_stove_1_cook_region)
+    (On wooden_two_layer_shelf_1 kitchen_table_wooden_two_layer_shelf_init_region)
+    (In butter_1 wooden_two_layer_shelf_1_top_region)
+    (On macaroni_and_cheese_1 kitchen_table_macaroni_and_cheese_init_region)
+  )
+
+  (:goal
+    (And (On macaroni_and_cheese_1 chefmate_8_frypan_1))
+  )
+
+)
